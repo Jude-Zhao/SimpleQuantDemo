@@ -13,6 +13,7 @@ from core.analysis import (
     calculate_forward_returns,
     calculate_icir,
 )
+from core.calendar import generate_rebalance_dates, get_trading_dates
 from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.optimization import EqualWeightOptimizer
@@ -58,9 +59,16 @@ def generate_trading_signal(config: TradingConfig) -> TradingSignalResult:
         horizon=config.forward_return_horizon,
         universe=universe,
     )
+    ic_dates = generate_rebalance_dates(
+        trading_dates=get_trading_dates(price_data).intersection(forward_returns.index),
+        rebalance_freq=config.rebalance_freq,  # type: ignore[arg-type]
+        rebalance_day=config.rebalance_day,
+    )
     icir_data = {
         factor_name: calculate_icir(
-            calculate_factor_ic(factor, forward_returns, min_periods=config.ic_min_periods),
+            calculate_factor_ic(factor, forward_returns, min_periods=config.ic_min_periods).loc[
+                lambda series: series.index.intersection(ic_dates)
+            ],
             window=config.icir_window,
             min_periods=config.icir_min_periods,
         )
@@ -109,4 +117,3 @@ def write_positions(output_dir: Path, signal_date: pd.Timestamp, positions: pd.D
     path = output_dir / f"position_{signal_date.strftime('%Y%m%d')}.csv"
     positions.to_csv(path, index=False, encoding="utf-8-sig")
     return path
-

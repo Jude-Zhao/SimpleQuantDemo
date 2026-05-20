@@ -53,7 +53,9 @@ def test_run_research_writes_outputs(tmp_path: Path) -> None:
     for path in result.output_paths.values():
         assert path.exists()
     summary = pd.read_csv(result.output_paths["summary"], index_col=0)
+    factor_stats = pd.read_csv(result.output_paths["factor_stats"], index_col=0, header=[0, 1])
     assert "value" in summary.columns
+    assert len(factor_stats) < len(result.backtest.equity_curve)
 
 
 def test_calculate_backtest_summary_has_expected_fields(tmp_path: Path) -> None:
@@ -105,4 +107,3 @@ def test_research_cli_runs(tmp_path: Path) -> None:
 
     assert "Research pipeline completed." in completed.stdout
     assert (tmp_path / "summary.csv").exists()
-

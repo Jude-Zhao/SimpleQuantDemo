@@ -90,6 +90,48 @@ def test_run_backtest_charges_turnover_cost() -> None:
     assert result.equity_curve.iloc[0] == pytest.approx(0.999)
 
 
+def test_run_backtest_clears_sold_positions_on_rebalance() -> None:
+    dates = pd.to_datetime(
+        [
+            "2026-01-05",
+            "2026-01-06",
+            "2026-01-07",
+            "2026-01-08",
+            "2026-01-09",
+            "2026-01-12",
+            "2026-01-13",
+        ]
+    )
+    price_data = pd.DataFrame(
+        {
+            "date": list(dates) * 2,
+            "sec": ["A.SH"] * len(dates) + ["B.SH"] * len(dates),
+            "open": [1] * (len(dates) * 2),
+            "high": [1] * (len(dates) * 2),
+            "low": [1] * (len(dates) * 2),
+            "close": [1] * (len(dates) * 2),
+            "volume": [100] * (len(dates) * 2),
+            "amount": [100] * (len(dates) * 2),
+        }
+    )
+    factor_scores = pd.DataFrame(
+        [[1.0, 0.0]] * 5 + [[0.0, 1.0]] * 2,
+        index=pd.DatetimeIndex(dates, name="date"),
+        columns=["A.SH", "B.SH"],
+    )
+
+    result = run_backtest(
+        price_data,
+        factor_scores,
+        BacktestConfig(top_n=1, max_weight=1.0, transaction_cost_bps=0),
+    )
+
+    assert result.weights.loc[pd.Timestamp("2026-01-09"), "A.SH"] == pytest.approx(1.0)
+    assert result.weights.loc[pd.Timestamp("2026-01-09"), "B.SH"] == pytest.approx(0.0)
+    assert result.weights.loc[pd.Timestamp("2026-01-12"), "A.SH"] == pytest.approx(0.0)
+    assert result.weights.loc[pd.Timestamp("2026-01-12"), "B.SH"] == pytest.approx(1.0)
+
+
 def test_run_backtest_with_example_pipeline() -> None:
     etf_path, macro_path, universe_path = _example_paths()
     source = CsvDataSource(etf_path, macro_path, universe_path)
@@ -122,4 +164,3 @@ def test_run_backtest_with_example_pipeline() -> None:
     assert result.weights.shape == synthesized.shape
     assert int((result.weights.sum(axis=1) > 0).sum()) > 0
     assert result.equity_curve.dropna().iloc[-1] > 0
-

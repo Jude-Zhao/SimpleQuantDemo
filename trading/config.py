@@ -26,6 +26,8 @@ class TradingConfig:
     icir_min_periods: int = 10
     half_life_periods: int = 20
     collinearity_threshold: float = 0.7
+    rebalance_freq: str = "weekly"
+    rebalance_day: int = 0
     top_n: int = 5
     max_weight: float = 0.5
     min_weight: float = 0.0
@@ -40,4 +42,3 @@ def default_trading_config(output_dir: Path | None = None) -> TradingConfig:
         universe_path=universe_path,
         output_dir=output_dir or PROJECT_ROOT / "trading" / "output" / "positions",
     )
-

@@ -39,4 +39,4 @@ trading/output/
 data/raw/
 data/processed/
 logs/
-
+.tmp_system_test/

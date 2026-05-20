@@ -64,7 +64,7 @@ def run_backtest(
         max_weight=cfg.max_weight,
         min_weight=cfg.min_weight,
     )
-    target_weights = pd.DataFrame(0.0, index=close.index, columns=close.columns)
+    target_weights = pd.DataFrame(pd.NA, index=close.index, columns=close.columns, dtype="Float64")
     turnover = pd.Series(0.0, index=close.index, name="turnover")
     costs = pd.Series(0.0, index=close.index, name="cost")
 
@@ -81,7 +81,7 @@ def run_backtest(
         costs.loc[date] = turnover.loc[date] * cfg.transaction_cost_bps / 10000
         previous_weights = new_weights
 
-    weights = target_weights.mask(target_weights == 0.0).ffill().fillna(0.0).astype(float)
+    weights = target_weights.ffill().fillna(0.0).astype(float)
     shifted_weights = weights.shift(1).fillna(0.0)
     gross_returns = (shifted_weights * daily_asset_returns).sum(axis=1)
     daily_returns = (gross_returns - costs).rename("daily_return")

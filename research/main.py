@@ -15,6 +15,7 @@ from core.analysis import (
     calculate_icir,
     calculate_rank_ic,
 )
+from core.calendar import generate_rebalance_dates, get_trading_dates
 from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.synthesis import ICIRWeightedSynthesizer
@@ -64,13 +65,18 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         horizon=config.forward_return_horizon,
         universe=universe,
     )
+    ic_dates = generate_rebalance_dates(
+        trading_dates=get_trading_dates(price_data).intersection(forward_returns.index),
+        rebalance_freq=config.backtest.rebalance_freq,  # type: ignore[arg-type]
+        rebalance_day=config.backtest.rebalance_day,
+    )
 
     ic_data = {
         factor_name: calculate_factor_ic(
             factor=factor,
             forward_returns=forward_returns,
             min_periods=config.ic_min_periods,
-        )
+        ).loc[lambda series: series.index.intersection(ic_dates)]
         for factor_name, factor in factor_panel.items()
     }
     rank_ic_data = {
@@ -78,7 +84,7 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
             factor=factor,
             forward_returns=forward_returns,
             min_periods=config.ic_min_periods,
-        )
+        ).loc[lambda series: series.index.intersection(ic_dates)]
         for factor_name, factor in factor_panel.items()
     }
     icir_data = {
