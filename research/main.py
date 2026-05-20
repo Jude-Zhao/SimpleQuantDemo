@@ -20,6 +20,7 @@ from core.factors import MomentumFactor, VolatilityFactor
 from core.synthesis import ICIRWeightedSynthesizer
 from research.backtest import BacktestResult, run_backtest
 from research.config import ResearchConfig, default_research_config
+from research.visualization import plot_equity_curve, plot_factor_stats, plot_latest_weights
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,9 @@ def write_research_outputs(
         "factor_stats": output_dir / "factor_stats.csv",
         "synthesized_scores": output_dir / "synthesized_scores.csv",
         "warnings": output_dir / "warnings.txt",
+        "equity_curve_plot": output_dir / "equity_curve.png",
+        "factor_stats_plot": output_dir / "factor_stats.png",
+        "latest_weights_plot": output_dir / "latest_weights.png",
     }
 
     backtest_result.equity_curve.to_frame().to_csv(paths["equity_curve"], encoding="utf-8-sig")
@@ -204,6 +208,10 @@ def write_research_outputs(
     if dropped_factors:
         warning_lines.append("Dropped factors: " + ", ".join(dropped_factors))
     paths["warnings"].write_text("\n".join(warning_lines), encoding="utf-8")
+
+    plot_equity_curve(backtest_result.equity_curve, paths["equity_curve_plot"])
+    plot_factor_stats(ic_data, rank_ic_data, icir_data, paths["factor_stats_plot"])
+    plot_latest_weights(backtest_result.weights, paths["latest_weights_plot"])
     return paths
 
 
@@ -249,4 +257,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
