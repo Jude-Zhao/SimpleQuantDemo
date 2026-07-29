@@ -1,0 +1,20 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+database:
+  url: "sqlite:///./data/simple_quant.db"
+
+datasource:
+  primary: "akshare"
+  secondary: "baostock"
+  cache_enabled: true
+  cache_days_daily: 365
+  cache_days_minute: 60
+
+factors:
+  auto_discover: true
+  scan_package: "core.factors"
+
+strategy:
+  max_history_runs: 100
