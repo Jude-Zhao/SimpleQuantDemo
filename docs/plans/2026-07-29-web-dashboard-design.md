@@ -160,31 +160,85 @@ def get_factor_meta(name: str) -> FactorMeta:
     """获取单个因子的元信息"""
 ```
 
-### 3.2 因子自描述
+### 3.2 因子自描述（标准模板）
 
-每个因子类通过类属性暴露元数据，供 Web 端动态渲染参数表单：
+每个因子类通过类属性暴露完整元数据，供 Web 端动态渲染参数表单和因子详情卡片。
+
+**标准元数据字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | str | ✅ | 因子唯一标识，如 `"momentum"` |
+| `display_name` | str | ✅ | 显示名称，如 `"动量因子"` |
+| `category` | str | ✅ | 因子类别：动量 / 价值 / 波动率 / 质量 / 成长等 |
+| `description` | str | ✅ | 文字描述因子逻辑 |
+| `formula` | str | ✅ | 公式（纯文本/Unicode），如 `"MOM(t) = close(t) / close(t-N) - 1"` |
+| `direction` | str | ✅ | 因子方向：`"positive"`（值越大越好）或 `"negative"`（值越小越好） |
+| `params_schema` | dict | ✅ | 参数 schema，前端动态渲染表单 |
+
+**params_schema 字段规范**：
 
 ```python
+params_schema = {
+    "window": {
+        "type": "int",          # int / float / str / bool
+        "default": 5,           # 默认值
+        "min": 1,               # 最小值（数值类型）
+        "max": 252,             # 最大值（数值类型）
+        "step": 1,              # 步长（数值类型）
+        "label": "窗口天数",     # 前端显示标签
+        "options": None,        # 枚举选项（str 类型时用）
+    }
+}
+```
+
+**因子文件标准模板**：
+
+```python
+# core/factors/momentum.py
+"""动量因子族"""
+
+import pandas as pd
+from core.factors.base import FactorBuilder
+from core.factors.registry import register_factor
+
+
 @register_factor("momentum")
 class MomentumFactor(FactorBuilder):
+    """N日动量因子
+
+    计算过去N个交易日的收盘价收益率，衡量标的的价格动量。
+    动量效应：过去表现好的标的在未来短期内继续表现好。
+    """
+
+    # === 因子元数据（必填，前端读取） ===
     name = "momentum"
     display_name = "动量因子"
-    description = "N日收盘价收益率"
+    category = "动量"
+    description = "过去N个交易日的收盘价收益率，反映价格趋势强度"
+    formula = "MOM(t) = close(t) / close(t-N) - 1"
+    direction = "positive"  # 因子值越大，预期未来收益越高
+
+    # 参数 schema（前端动态渲染表单）
     params_schema = {
         "window": {
             "type": "int",
             "default": 5,
             "min": 1,
             "max": 252,
-            "label": "窗口天数"
+            "step": 1,
+            "label": "窗口天数",
         }
     }
 
+    # === 实现 ===
     def __init__(self, window: int = 5):
         self.window = window
 
-    def build(self, price_data, macro_data, universe) -> pd.DataFrame:
-        ...
+    def build(self, price_data: pd.DataFrame, macro_data: pd.DataFrame, universe: list[str]) -> pd.DataFrame:
+        close = price_data.pivot_table(index="date", columns="sec", values="close")
+        close = close[universe]
+        return close.pct_change(self.window)
 ```
 
 ---
@@ -411,18 +465,65 @@ CachedDataSource
     └─ 未命中 → AkShare（主）/ baostock（备）拉取 → 写入缓存
 ```
 
-**缓存表：etf_daily_bar**
+### 7.2 行情数据周期
 
-| 字段 | 类型 |
-|------|------|
-| sec_code | TEXT |
-| trade_date | DATE |
-| open / high / low / close / volume / amount | REAL |
-| source | TEXT |
+支持日线和分钟线两个周期，从数据源到存储到 API 全链路贯通。
 
+**数据源能力**：
+
+| 数据源 | 日线 | 分钟线 | 接口 |
+|--------|------|--------|------|
+| AkShare | ✅ | ✅ (1/5/15/30/60min) | `fund_etf_hist_em()` / `fund_etf_hist_min_em()` |
+| baostock | ✅ | ✅ (5/15/30/60min) | `query_history_k_data_plus(frequency=...)` |
+
+**存储设计**（两张独立表）：
+
+```
+etf_daily_bar（日线表）
+├── sec_code         TEXT
+├── trade_date       DATE
+├── open / high / low / close / volume / amount
+└── source           TEXT
 唯一索引：(sec_code, trade_date)
 
-### 7.2 配置体系
+etf_minute_bar（分钟线表）
+├── sec_code         TEXT
+├── trade_datetime   DATETIME    (精确到分钟)
+├── period           TEXT        (1m / 5m / 15m / 30m / 60m)
+├── open / high / low / close / volume / amount
+└── source           TEXT
+唯一索引：(sec_code, trade_datetime, period)
+```
+
+**缓存策略**：
+- **日线**：全量缓存，启动时检查最新日期，增量补数据
+- **分钟线**：按需缓存 + 过期机制（默认保留最近 60 天，避免数据膨胀）
+- 提供"刷新数据"按钮，手动触发日线/分钟线更新
+
+**DataSouce 接口扩展**：
+
+```python
+class DataSource(ABC):
+    @abstractmethod
+    def get_etf_price(
+        self,
+        sec_codes: list[str],
+        start_date: str,
+        end_date: str,
+        period: str = "daily",   # daily / 1m / 5m / 15m / 30m / 60m
+    ) -> pd.DataFrame:
+        """获取ETF行情数据"""
+```
+
+**行情 API**：
+```
+GET /api/market/etf/{sec_code}/kline
+  ?period=daily        # daily / 1m / 5m / 15m / 30m / 60m
+  &start_date=2024-01-01
+  &end_date=2024-06-01
+```
+
+### 7.3 配置体系
 
 YAML + Pydantic + 环境变量覆盖。
 
@@ -451,14 +552,14 @@ strategy:
 
 敏感信息通过环境变量（.env 文件）注入，不硬编码。
 
-### 7.3 部署
+### 7.4 部署
 
 - 启动命令：`uvicorn webapp.main:app --host 0.0.0.0 --port 8000`
 - 前端静态文件由 FastAPI 直接托管
 - 内网部署，不做认证
 - Windows 下可用 nssm 注册为服务常驻运行
 
-### 7.4 新增依赖
+### 7.5 新增依赖
 
 | 包 | 用途 |
 |----|------|
@@ -504,8 +605,9 @@ strategy:
 
 ### 行情数据
 - `GET /api/market/etf/list` — ETF 列表
-- `GET /api/market/etf/{sec_code}/history` — ETF 历史行情
-- `POST /api/market/refresh` — 刷新数据
+- `GET /api/market/etf/{sec_code}/kline` — ETF K线数据（支持日线/分钟线）
+  - Query 参数：`period` (daily/1m/5m/15m/30m/60m), `start_date`, `end_date`
+- `POST /api/market/refresh` — 刷新数据（日线/分钟线）
 
 ### 健康检查
 - `GET /api/health` — 服务状态
