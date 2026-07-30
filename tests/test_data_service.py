@@ -1,0 +1,128 @@
+"""Tests for data_service."""
+
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from webapp.models.database import Base
+from webapp.services.data_service import (
+    get_etf_list,
+    get_etf_price,
+)
+
+
+@pytest.fixture
+def test_db():
+    """In-memory SQLite database for testing."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def test_get_etf_list():
+    etfs = get_etf_list()
+    assert isinstance(etfs, list)
+    assert len(etfs) >= 5
+    codes = [e["sec_code"] for e in etfs]
+    assert "510300.SH" in codes
+    assert "510500.SH" in codes
+    assert "159915.SZ" in codes
+    # Each entry has required fields
+    for e in etfs:
+        assert "sec_code" in e
+        assert "sec_name" in e
+        assert "category" in e
+
+
+def test_get_etf_price_uses_cache(test_db):
+    """Verify cache writer stores data and cache reader retrieves it."""
+    from webapp.services.data_service import _cache_reader, _cache_writer
+
+    # Write some test data
+    dates = pd.date_range("2024-01-02", periods=3, freq="B")
+    rows = []
+    for d in dates:
+        for sec in ["510300.SH", "510500.SH"]:
+            rows.append({
+                "date": d,
+                "sec": sec,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000000.0,
+                "amount": 100000000.0,
+                "source": "test",
+            })
+    df = pd.DataFrame(rows)
+
+    writer = _cache_writer(test_db)
+    writer(df, "daily")
+
+    # Read it back
+    reader = _cache_reader(test_db)
+    cached = reader(["510300.SH"], "2024-01-02", "2024-01-04", "daily")
+
+    assert not cached.empty
+    assert len(cached) == 3
+    assert cached["sec"].unique()[0] == "510300.SH"
+    assert "close" in cached.columns
+
+
+def test_get_etf_price_minute_cache(test_db):
+    """Verify minute bar cache works."""
+    from webapp.services.data_service import _cache_reader, _cache_writer
+
+    times = pd.date_range("2024-01-02 09:30", periods=5, freq="5min")
+    rows = []
+    for t in times:
+        rows.append({
+            "date": t,
+            "sec": "510300.SH",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 10000.0,
+            "amount": 1000000.0,
+            "source": "test",
+        })
+    df = pd.DataFrame(rows)
+
+    writer = _cache_writer(test_db)
+    writer(df, "5m")
+
+    reader = _cache_reader(test_db)
+    cached = reader(["510300.SH"], "2024-01-02 09:30", "2024-01-02 10:00", "5m")
+
+    assert not cached.empty
+    assert len(cached) == 5
+
+
+def test_cache_idempotent(test_db):
+    """Writing the same data twice should not create duplicates."""
+    from webapp.services.data_service import _cache_reader, _cache_writer
+
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    rows = [
+        {"date": d, "sec": "510300.SH", "open": 100, "high": 101, "low": 99,
+         "close": 100.5, "volume": 1000, "amount": 100000, "source": "test"}
+        for d in dates
+    ]
+    df = pd.DataFrame(rows)
+
+    writer = _cache_writer(test_db)
+    writer(df, "daily")
+    writer(df, "daily")  # Write again
+
+    reader = _cache_reader(test_db)
+    cached = reader(["510300.SH"], "2024-01-02", "2024-01-03", "daily")
+    assert len(cached) == 2  # Not 4
