@@ -17,6 +17,7 @@ def test_discover_factors():
     names = list_factor_names()
     assert "momentum" in names
     assert "volatility" in names
+    assert "reversal" in names
 
 
 def test_get_factor_class():
@@ -24,6 +25,48 @@ def test_get_factor_class():
     assert cls is not None
     factor = cls(window=10)
     assert factor.name == "momentum_10"
+
+
+def test_reversal_factor_auto_registered():
+    names = list_factor_names()
+    assert "reversal" in names
+    cls = get_factor_class("reversal")
+    assert cls is not None
+    assert cls.display_name == "反转因子"
+    assert cls.category == "价值"
+    assert cls.direction == "positive"
+    assert "window" in cls.params_schema
+
+
+def test_reversal_factor_build():
+    cls = get_factor_class("reversal")
+    assert cls is not None
+    factor = cls(window=5)
+
+    dates = pd.date_range("2024-01-01", periods=10, freq="B")
+    prices = pd.DataFrame({
+        "date": dates.repeat(2),
+        "sec": ["A", "B"] * 10,
+        "close": [100, 50, 101, 51, 102, 52, 103, 53, 104, 54,
+                  105, 55, 106, 56, 107, 57, 108, 58, 109, 59],
+    })
+
+    result = factor.build(prices, pd.DataFrame(), ["A", "B"])
+    assert result.shape[1] == 2
+    assert list(result.columns) == ["A", "B"]
+    # 反转因子是动量的相反数
+    from core.factors.registry import get_factor_class as gfc
+    mom_cls = gfc("momentum")
+    mom = mom_cls(window=5)
+    mom_result = mom.build(prices, pd.DataFrame(), ["A", "B"])
+    # 非 NaN 值应该互为相反数
+    common = result.dropna().index.intersection(mom_result.dropna().index)
+    assert len(common) > 0
+    pd.testing.assert_series_equal(
+        result.loc[common, "A"],
+        -mom_result.loc[common, "A"],
+        check_names=False,
+    )
 
 
 def test_factor_meta_momentum():
