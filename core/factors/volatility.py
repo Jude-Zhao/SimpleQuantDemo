@@ -6,11 +6,42 @@ import numpy as np
 import pandas as pd
 
 from core.factors.base import FactorBuilder
+from core.factors.registry import register_factor
 from core.factors.utils import pivot_price_field, validate_factor_matrix
 
 
+@register_factor("volatility")
 class VolatilityFactor(FactorBuilder):
-    """N-day annualized volatility factor based on close-to-close returns."""
+    """N-day annualized volatility factor based on close-to-close returns.
+
+    Measures the price fluctuation over the past N trading days.
+    Higher volatility indicates higher risk.
+    """
+
+    registry_name = "volatility"
+    display_name = "波动率因子"
+    category = "波动率"
+    description = "过去N个交易日的收盘价收益率年化标准差，衡量价格波动风险"
+    formula = "VOL(t) = std(returns(t-N+1..t)) * sqrt(annualization)"
+    direction = "negative"
+    params_schema = {
+        "window": {
+            "type": "int",
+            "default": 20,
+            "min": 2,
+            "max": 252,
+            "step": 1,
+            "label": "窗口天数",
+        },
+        "annualization": {
+            "type": "int",
+            "default": 252,
+            "min": 1,
+            "max": 365,
+            "step": 1,
+            "label": "年化天数",
+        },
+    }
 
     def __init__(self, window: int = 20, annualization: int = 252) -> None:
         if window <= 1:
@@ -36,4 +67,3 @@ class VolatilityFactor(FactorBuilder):
         factor.index.name = "date"
         validate_factor_matrix(factor, universe, name=self.name)
         return factor
-

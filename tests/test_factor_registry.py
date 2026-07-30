@@ -1,0 +1,76 @@
+"""Tests for the factor registry and auto-discovery mechanism."""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from core.factors.registry import (
+    discover_factors,
+    get_factor_class,
+    get_factor_registry,
+    list_factor_names,
+)
+
+
+def test_discover_factors():
+    discover_factors()
+    names = list_factor_names()
+    assert "momentum" in names
+    assert "volatility" in names
+
+
+def test_get_factor_class():
+    cls = get_factor_class("momentum")
+    assert cls is not None
+    factor = cls(window=10)
+    assert factor.name == "momentum_10"
+
+
+def test_factor_meta_momentum():
+    cls = get_factor_class("momentum")
+    assert cls is not None
+    assert cls.display_name == "动量因子"
+    assert cls.category == "动量"
+    assert cls.direction == "positive"
+    assert "window" in cls.params_schema
+    assert cls.params_schema["window"]["type"] == "int"
+    assert cls.params_schema["window"]["default"] == 5
+    assert cls.params_schema["window"]["label"] == "窗口天数"
+
+
+def test_factor_meta_volatility():
+    cls = get_factor_class("volatility")
+    assert cls is not None
+    assert cls.display_name == "波动率因子"
+    assert cls.category == "波动率"
+    assert cls.direction == "negative"
+    assert "window" in cls.params_schema
+    assert "annualization" in cls.params_schema
+
+
+def test_factor_formula_present():
+    for name in list_factor_names():
+        cls = get_factor_class(name)
+        assert cls is not None
+        assert cls.formula, f"Factor {name} should have a formula"
+        assert cls.description, f"Factor {name} should have a description"
+
+
+def test_momentum_factor_still_works():
+    """Ensure the refactored momentum factor still computes correctly."""
+    cls = get_factor_class("momentum")
+    assert cls is not None
+    factor = cls(window=5)
+
+    dates = pd.date_range("2024-01-01", periods=10, freq="B")
+    prices = pd.DataFrame({
+        "date": dates.repeat(2),
+        "sec": ["A", "B"] * 10,
+        "close": [100, 50, 101, 51, 102, 52, 103, 53, 104, 54,
+                  105, 55, 106, 56, 107, 57, 108, 58, 109, 59],
+    })
+
+    result = factor.build(prices, pd.DataFrame(), ["A", "B"])
+    assert result.shape[1] == 2
+    assert list(result.columns) == ["A", "B"]
+    assert result.index.name == "date"
