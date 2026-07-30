@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
 import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
+from webapp.models.database import get_db
 from webapp.schemas.factor import FactorComputeRequest, FactorComputeResponse, FactorMeta
+from webapp.services.data_service import get_etf_list, get_etf_price
 from webapp.services.factor_service import compute_factor, list_factors
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
@@ -18,35 +21,33 @@ def get_factors():
 
 
 @router.post("/compute", response_model=FactorComputeResponse)
-def compute_factor_endpoint(req: FactorComputeRequest):
+def compute_factor_endpoint(
+    req: FactorComputeRequest,
+    db: Session = Depends(get_db),
+):
     """Compute a single factor with IC analysis and group returns.
 
-    NOTE: Currently uses synthetic test data. Will be connected to the
-    real data source in a later task.
+    Uses cached ETF price data (fetched from baostock on cache miss).
     """
-    import numpy as np
+    # Get ETF list as the universe
+    etfs = get_etf_list(db)
+    universe = [e["sec_code"] for e in etfs]
 
-    # Generate synthetic data for now (placeholder)
-    np.random.seed(42)
-    n_dates = 120
-    n_sec = 15
-    dates = pd.date_range("2024-01-01", periods=n_dates, freq="B")
-    secs = [f"ETF{i:02d}" for i in range(n_sec)]
+    if not universe:
+        raise HTTPException(status_code=400, detail="No ETFs available")
 
-    rows = []
-    base_prices = np.linspace(50, 150, n_sec)
-    for i, date in enumerate(dates):
-        for j, sec in enumerate(secs):
-            drift = 0.0003 * (j - n_sec / 2)
-            noise = np.random.randn() * 0.012
-            base_prices[j] *= (1 + drift + noise)
-            rows.append({
-                "date": date,
-                "sec": sec,
-                "close": round(base_prices[j], 4),
-            })
-    price_data = pd.DataFrame(rows)
-    universe = secs
+    # Fetch price data
+    price_data = get_etf_price(
+        db=db,
+        sec_codes=universe,
+        period="daily",
+    )
+
+    if price_data.empty:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch price data from data source",
+        )
 
     try:
         return compute_factor(
