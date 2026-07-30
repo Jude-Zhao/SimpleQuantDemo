@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from webapp.api.factors import router as factors_router
 from webapp.api.health import router as health_router
 from webapp.config import get_config
 from webapp.models.database import init_db
@@ -18,6 +19,7 @@ def create_app() -> FastAPI:
 
     # API 路由
     app.include_router(health_router)
+    app.include_router(factors_router)
 
     # 静态文件
     static_dir = Path(__file__).parent / "static"
