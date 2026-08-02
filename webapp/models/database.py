@@ -36,9 +36,17 @@ def get_db():
 
 
 def init_db():
-    """初始化数据库表，确保 data 目录存在"""
+    """初始化数据库表，确保 data 目录存在，并填充默认种子数据"""
     if _config.database.url.startswith("sqlite"):
         db_path = _config.database.url.replace("sqlite:///", "")
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
     Base.metadata.create_all(bind=engine)
+
+    # 种子数据
+    from webapp.services.universe_service import seed_default_universe
+    db = SessionLocal()
+    try:
+        seed_default_universe(db)
+    finally:
+        db.close()
