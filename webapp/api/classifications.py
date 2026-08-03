@@ -1,0 +1,87 @@
+"""Classification and constraints API endpoints."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from webapp.models.database import get_db
+from webapp.schemas.classification import (
+    ClassificationRuleCreate,
+    ClassificationRuleResponse,
+    ClassificationRuleUpdate,
+    ClassificationResult,
+    ConstraintsSaveRequest,
+    OptimizationConstraints,
+)
+from webapp.services.classification_service import (
+    classify_universe,
+    create_rule,
+    delete_rule,
+    get_rule,
+    list_rules,
+    update_rule,
+)
+
+router = APIRouter(prefix="/api/classifications", tags=["classifications"])
+constraints_router = APIRouter(prefix="/api/constraints", tags=["constraints"])
+
+
+@router.get("/rules", response_model=list[ClassificationRuleResponse])
+def get_rules(active_only: bool = True, db: Session = Depends(get_db)):
+    """List all classification rules."""
+    return list_rules(db, active_only=active_only)
+
+
+@router.post("/rules", response_model=ClassificationRuleResponse)
+def create_rule_endpoint(rule: ClassificationRuleCreate, db: Session = Depends(get_db)):
+    """Create a new classification rule."""
+    return create_rule(db, rule)
+
+
+@router.put("/rules/{rule_id}", response_model=ClassificationRuleResponse)
+def update_rule_endpoint(rule_id: int, update: ClassificationRuleUpdate, db: Session = Depends(get_db)):
+    """Update a classification rule."""
+    rule = update_rule(db, rule_id, update)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return rule
+
+
+@router.delete("/rules/{rule_id}")
+def delete_rule_endpoint(rule_id: int, db: Session = Depends(get_db)):
+    """Delete a classification rule."""
+    success = delete_rule(db, rule_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"success": True, "id": rule_id}
+
+
+@router.post("/apply", response_model=list[ClassificationResult])
+def apply_classification(db: Session = Depends(get_db)):
+    """Apply all active classification rules to the current universe."""
+    return classify_universe(db)
+
+
+# ── Constraints ────────────────────────────────────────────────────────
+
+# In-memory constraints storage for now.
+# TODO: persist constraints in DB when we have a proper constraints model.
+_constraints = OptimizationConstraints(
+    single_max_weight=0.15,
+    category_constraints=[],
+)
+
+
+@constraints_router.get("", response_model=OptimizationConstraints)
+def get_constraints():
+    """Get current optimization constraints configuration."""
+    return _constraints
+
+
+@constraints_router.put("", response_model=OptimizationConstraints)
+def update_constraints(req: ConstraintsSaveRequest):
+    """Update optimization constraints configuration."""
+    global _constraints
+    _constraints = req.constraints
+    return _constraints

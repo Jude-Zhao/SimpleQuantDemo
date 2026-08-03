@@ -1,0 +1,44 @@
+/* Theme: system preference fallback + smooth transitions */
+
+/* Before JS initializes a theme, follow the OS preference */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+        --bg-base: #1c1c1e;
+        --bg-surface: #252527;
+        --bg-elevated: #2e2e30;
+        --border-subtle: #3a3a3c;
+        --border-hover: #4a4a4c;
+        --text-primary: #c8c6c2;
+        --text-secondary: #8a8a8a;
+        --text-muted: #5a5a5c;
+        --accent: #a0a8b8;
+        --accent-subtle: #3a4048;
+        --accent-hover: #b0b8c8;
+        --success: #7a9a7a;
+        --success-subtle: #2a3a2a;
+        --warning: #baa07a;
+        --warning-subtle: #3a352a;
+        --danger: #b88080;
+        --danger-subtle: #3a2a2a;
+        --info: #8a9aaa;
+        --info-subtle: #2a3238;
+        --sidebar-bg: #212123;
+        --sidebar-text: #8a8a8a;
+        --sidebar-hover: rgba(160, 168, 184, 0.1);
+        --sidebar-active: rgba(160, 168, 184, 0.16);
+        --sidebar-border: #303032;
+        --chart-line: #343438;
+        --chart-tick: #5a5a5c;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+        --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+}
+
+/* Smooth theme transition on supported elements */
+body, .card, .stat-card, .sidebar, .topbar, .table th, .table td,
+.form-control, .form-select, textarea.form-control, .btn, .modal,
+.toast, .factor-chip, .badge, .alert {
+    transition: background-color 0.25s ease, color 0.25s ease,
+        border-color 0.25s ease, box-shadow 0.25s ease;
+}

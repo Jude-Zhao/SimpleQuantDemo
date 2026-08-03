@@ -20,6 +20,10 @@ from webapp.schemas.factor import (
     FactorMeta,
     FactorParamSchema,
 )
+from webapp.schemas.factor_correlation import (
+    FactorCorrelationRequest,
+    FactorCorrelationResponse,
+)
 
 
 def list_factors() -> list[FactorMeta]:
@@ -109,6 +113,70 @@ def compute_factor(
         display_name=getattr(cls, "display_name", factor_name),
         ic_result=ic_result,
         group_returns=group_returns,
+    )
+
+
+def compute_factor_correlation(
+    req: FactorCorrelationRequest,
+    price_data: pd.DataFrame,
+    macro_data: pd.DataFrame,
+    universe: list[str],
+) -> FactorCorrelationResponse:
+    """Compute the cross-sectional correlation of factor values over time.
+
+    For each date, the factor values across securities are correlated; the
+    resulting per-date correlations are averaged into a single matrix.
+    """
+    panel: dict[str, pd.DataFrame] = {}
+    for name in req.factor_names:
+        cls = get_factor_class(name)
+        if cls is None:
+            raise ValueError(f"Factor not found: {name}")
+        panel[name] = cls().build(price_data, macro_data, universe)
+
+    if not panel:
+        return FactorCorrelationResponse(
+            factor_names=[],
+            correlation_matrix=[],
+        )
+
+    # Align all factor matrices to a common date index.
+    common_index = panel[list(panel.keys())[0]].index
+    for mat in panel.values():
+        common_index = common_index.intersection(mat.index)
+    common_index = common_index.sort_values()
+
+    # Collect per-date cross-sectional correlation, then average.
+    date_corrs: list[pd.DataFrame] = []
+    for date in common_index:
+        cross = pd.DataFrame({
+            name: mat.loc[date] for name, mat in panel.items()
+        }).dropna()
+        if len(cross) < 3:
+            continue
+        corr = cross.corr()
+        date_corrs.append(corr)
+
+    if not date_corrs:
+        n = len(req.factor_names)
+        return FactorCorrelationResponse(
+            factor_names=list(req.factor_names),
+            correlation_matrix=[
+                [1.0 if i == j else 0.0 for j in range(n)]
+                for i in range(n)
+            ],
+        )
+
+    avg_corr = sum(date_corrs) / len(date_corrs)
+
+    names = list(req.factor_names)
+    matrix = [
+        [float(avg_corr.loc[a, b]) for b in names]
+        for a in names
+    ]
+    return FactorCorrelationResponse(
+        factor_names=names,
+        correlation_matrix=matrix,
     )
 
 

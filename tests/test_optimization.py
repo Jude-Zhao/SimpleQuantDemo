@@ -8,7 +8,7 @@ import pytest
 from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
 from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
-from core.optimization import EqualWeightOptimizer
+from core.optimization import CategoryConstraint, EqualWeightOptimizer, OptimizationConstraints
 from core.optimization.exceptions import OptimizationError
 from core.synthesis import ICIRWeightedSynthesizer
 
@@ -91,6 +91,101 @@ def test_equal_weight_optimizer_rejects_duplicate_scores() -> None:
         EqualWeightOptimizer(top_n=1, max_weight=1.0).optimize(scores)
 
 
+def test_equal_weight_with_category_max_count() -> None:
+    scores = pd.Series(
+        [1.0, 0.9, 0.8, 0.7, 0.6, 0.5],
+        index=["A.SH", "B.SH", "C.SH", "D.SH", "E.SH", "F.SH"],
+    )
+    classifications = {
+        "A.SH": {"category": "宽基"},
+        "B.SH": {"category": "宽基"},
+        "C.SH": {"category": "宽基"},
+        "D.SH": {"category": "商品"},
+        "E.SH": {"category": "商品"},
+        "F.SH": {"category": "债券"},
+    }
+    constraints = OptimizationConstraints(
+        category_constraints=[
+            CategoryConstraint(
+                category_key="category",
+                category_value="宽基",
+                max_count=2,
+            )
+        ]
+    )
+
+    weights = EqualWeightOptimizer(top_n=3, max_weight=1.0).optimize(
+        scores,
+        constraints=constraints,
+        classifications=classifications,
+    )
+
+    selected = weights[weights > 0].index.tolist()
+    assert "C.SH" not in selected
+    assert "D.SH" in selected
+    assert len(selected) == 3
+    assert (weights > 0).sum() == 3
+
+
+def test_equal_weight_with_category_min_count() -> None:
+    scores = pd.Series(
+        [1.0, 0.9, 0.8, 0.7],
+        index=["A.SH", "B.SH", "C.SH", "D.SH"],
+    )
+    classifications = {
+        "A.SH": {"category": "宽基"},
+        "B.SH": {"category": "宽基"},
+        "C.SH": {"category": "宽基"},
+        "D.SH": {"category": "商品"},
+    }
+    constraints = OptimizationConstraints(
+        category_constraints=[
+            CategoryConstraint(
+                category_key="category",
+                category_value="商品",
+                min_count=1,
+            )
+        ]
+    )
+
+    weights = EqualWeightOptimizer(top_n=2, max_weight=0.5).optimize(
+        scores,
+        constraints=constraints,
+        classifications=classifications,
+    )
+
+    selected = weights[weights > 0].index.tolist()
+    assert "D.SH" in selected
+    assert len(selected) == 2
+
+
+def test_equal_weight_with_category_min_count_infeasible() -> None:
+    scores = pd.Series(
+        [1.0, 0.9],
+        index=["A.SH", "B.SH"],
+    )
+    classifications = {
+        "A.SH": {"category": "宽基"},
+        "B.SH": {"category": "宽基"},
+    }
+    constraints = OptimizationConstraints(
+        category_constraints=[
+            CategoryConstraint(
+                category_key="category",
+                category_value="商品",
+                min_count=2,
+            )
+        ]
+    )
+
+    with pytest.raises(OptimizationError):
+        EqualWeightOptimizer(top_n=2, max_weight=0.5).optimize(
+            scores,
+            constraints=constraints,
+            classifications=classifications,
+        )
+
+
 def test_equal_weight_pipeline_with_example_synthesized_scores() -> None:
     etf_path, macro_path, universe_path = _example_paths()
     source = CsvDataSource(etf_path, macro_path, universe_path)
@@ -120,4 +215,3 @@ def test_equal_weight_pipeline_with_example_synthesized_scores() -> None:
     assert weights.sum() == pytest.approx(1.0)
     assert (weights > 0).sum() == 5
     assert set(weights[weights > 0].unique()) == {0.2}
-

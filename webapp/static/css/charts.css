@@ -1,0 +1,43 @@
+/* ECharts container styling */
+
+.chart,
+.chart-sm,
+.chart-xs {
+    contain: layout paint;
+}
+
+.chart-tooltip-custom {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.chart-tooltip-custom .tt-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.chart-tooltip-custom .tt-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.chart-tooltip-custom .tt-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.chart-tooltip-custom .tt-value {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-weight: 500;
+}
