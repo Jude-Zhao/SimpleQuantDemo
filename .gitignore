@@ -34,6 +34,7 @@ Thumbs.db
 ~$*.xls
 
 # Project generated outputs
+data_example/
 research/output/
 trading/output/
 data/raw/
