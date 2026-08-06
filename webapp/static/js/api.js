@@ -124,6 +124,76 @@ const API = {
         if (end) params.append("end", end);
         return this.request(`/api/market/price?${params.toString()}`);
     },
+
+    // ── Data Sync ──────────────────────────────────────────
+    async syncEtf(options = {}) {
+        return this.request("/api/market/sync/etf", { method: "POST", body: options });
+    },
+
+    async getSyncStatus(taskId) {
+        return this.request(`/api/market/sync/${taskId}`);
+    },
+
+    /**
+     * Poll a sync task until completion or failure.
+     * @param {string} taskId
+     * @param {function} onProgress - callback with task object
+     * @param {number} intervalMs - poll interval
+     * @returns {Promise<object>} final task object
+     */
+    async pollSyncTask(taskId, onProgress, intervalMs = 2000) {
+        while (true) {
+            const task = await this.getSyncStatus(taskId);
+            if (onProgress) onProgress(task);
+            if (task.status === "completed" || task.status === "failed") {
+                return task;
+            }
+            await new Promise((r) => setTimeout(r, intervalMs));
+        }
+    },
+
+    // ── Macro Data ──────────────────────────────────────────
+    async macroFields(frequency) {
+        const q = frequency ? `?frequency=${frequency}` : "";
+        return this.request(`/api/macro/fields${q}`);
+    },
+
+    async macroDaily(params = {}) {
+        const qs = new URLSearchParams();
+        if (params.start_date) qs.append("start_date", params.start_date);
+        if (params.end_date) qs.append("end_date", params.end_date);
+        if (params.fields) qs.append("fields", params.fields.join(","));
+        const q = qs.toString();
+        return this.request(`/api/macro/daily${q ? "?" + q : ""}`);
+    },
+
+    async macroMonthly(params = {}) {
+        const qs = new URLSearchParams();
+        if (params.start_month) qs.append("start_month", params.start_month);
+        if (params.end_month) qs.append("end_month", params.end_month);
+        if (params.fields) qs.append("fields", params.fields.join(","));
+        const q = qs.toString();
+        return this.request(`/api/macro/monthly${q ? "?" + q : ""}`);
+    },
+
+    async syncMacro(payload) {
+        return this.request("/api/macro/sync", { method: "POST", body: payload });
+    },
+
+    async getMacroSyncStatus(taskId) {
+        return this.request(`/api/macro/sync/${taskId}`);
+    },
+
+    async pollMacroSyncTask(taskId, onProgress, intervalMs = 2000) {
+        while (true) {
+            const task = await this.getMacroSyncStatus(taskId);
+            if (onProgress) onProgress(task);
+            if (task.status === "completed" || task.status === "failed") {
+                return task;
+            }
+            await new Promise((r) => setTimeout(r, intervalMs));
+        }
+    },
 };
 
 window.API = API;

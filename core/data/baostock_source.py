@@ -137,8 +137,48 @@ class BaostockDataSource(DataSource):
         end_date: str | pd.Timestamp | None = None,
         trading_dates: Sequence[pd.Timestamp] | None = None,
     ) -> pd.DataFrame:
-        """Baostock does not provide macro factor data. Returns empty DataFrame."""
-        return pd.DataFrame()
+        """Fetch monthly macro data from Baostock.
+
+        Currently provides:
+        - m2_yoy: M2 YoY growth rate (%)
+        - m1_yoy: M1 YoY growth rate (%)
+
+        Returns a DataFrame indexed by month string (YYYY-MM).
+        """
+        self._ensure_login()
+        import baostock as bs  # type: ignore
+
+        # Determine date range in YYYY-MM format
+        if start_date:
+            start_str = pd.Timestamp(start_date).strftime("%Y-%m")
+        else:
+            start_str = "2010-01"
+        if end_date:
+            end_str = pd.Timestamp(end_date).strftime("%Y-%m")
+        else:
+            end_str = pd.Timestamp.now().strftime("%Y-%m")
+
+        rs = bs.query_money_supply_data_month(
+            start_date=start_str,
+            end_date=end_str,
+        )
+        if rs.error_code != "0":
+            return pd.DataFrame()
+
+        rows = []
+        while rs.next():
+            rows.append(rs.get_row_data())
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=rs.fields)
+        # Build month index from statYear + statMonth
+        df["month"] = df["statYear"] + "-" + df["statMonth"]
+        df["m2_yoy"] = pd.to_numeric(df["m2YOY"], errors="coerce")
+        df["m1_yoy"] = pd.to_numeric(df["m1YOY"], errors="coerce")
+        df = df.set_index("month")[["m2_yoy", "m1_yoy"]]
+        df.index.name = None
+        return df.sort_index()
 
     def get_universe(self) -> list[str]:
         """Return a default list of ETF codes.

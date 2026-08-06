@@ -21,16 +21,14 @@ _config = get_config()
 def _get_primary_source():
     """Get primary data source instance.
 
-    Tries AkShare first, falls back to baostock if unavailable.
+    Uses AkShare as primary for ETF data (Sina backend, stable long history).
+    Falls back to Baostock if AkShare is unavailable.
     """
     try:
-        from core.data.akshare_source import ensure_akshare_available
+        from core.data.akshare_source import AkShareDataSource, ensure_akshare_available
         ensure_akshare_available()
-        # AkShare ETF price adapter is not fully implemented yet,
-        # so we use baostock as the working primary for now.
-        # TODO: switch to AkShare when its ETF adapter is ready.
-        pass
-    except AkShareDataUnavailable:
+        return AkShareDataSource()
+    except Exception:
         pass
     return BaostockDataSource()
 

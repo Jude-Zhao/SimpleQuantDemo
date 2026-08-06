@@ -25,12 +25,17 @@ def test_get_universe():
     assert "159915.SZ" in universe
 
 
-def test_get_macro_factors_empty():
+def test_get_macro_factors_money_supply():
+    """Baostock now provides monthly money supply data (m1_yoy / m2_yoy)."""
     from core.data.baostock_source import BaostockDataSource
 
     ds = BaostockDataSource()
-    result = ds.get_macro_factors()
-    assert result.empty
+    result = ds.get_macro_factors(start_date="2024-01-01", end_date="2024-03-31")
+    assert not result.empty
+    assert "m1_yoy" in result.columns
+    assert "m2_yoy" in result.columns
+    # Index should be month strings YYYY-MM
+    assert str(result.index[0])[:7] == "2024-01"
 
 
 def test_period_mapping():

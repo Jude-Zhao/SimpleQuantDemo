@@ -11,6 +11,7 @@
         factors: { title: "因子看板", file: "factors.js", fn: "renderFactors" },
         strategies: { title: "策略运行", file: "strategies.js", fn: "renderStrategies" },
         universe: { title: "标的池", file: "universe.js", fn: "renderUniverse" },
+        macro: { title: "宏观数据", file: "macro.js", fn: "renderMacro" },
         classification: { title: "分类约束", file: "classification.js", fn: "renderClassification" },
         settings: { title: "设置", file: "settings.js", fn: "renderSettings" },
     };
@@ -282,8 +283,8 @@
             }
             return;
         }
-        // Ctrl+1..6: switch pages
-        if (e.ctrlKey && /^[1-6]$/.test(k)) {
+        // Ctrl+1..7: switch pages
+        if (e.ctrlKey && /^[1-7]$/.test(k)) {
             const routes = Object.keys(ROUTES);
             const target = routes[parseInt(k, 10) - 1];
             if (target) {

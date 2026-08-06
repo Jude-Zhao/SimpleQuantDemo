@@ -24,6 +24,12 @@ class DatasourceConfig(BaseModel):
     cache_days_minute: int = 60
 
 
+class SyncConfig(BaseModel):
+    """数据同步配置。"""
+
+    default_start_date: str = "2021-01-04"  # 行情/宏观同步默认起始日期（回测起点）
+
+
 class FactorsConfig(BaseModel):
     auto_discover: bool = True
     scan_package: str = "core.factors"
@@ -45,6 +51,7 @@ class WebAppConfig(BaseModel):
     server: ServerConfig
     database: DatabaseConfig
     datasource: DatasourceConfig
+    sync: SyncConfig
     factors: FactorsConfig
     strategy: StrategyConfig
 

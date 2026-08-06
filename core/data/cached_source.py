@@ -142,7 +142,11 @@ class CachedDataSource(DataSource):
         end_date: str | pd.Timestamp | None = None,
         trading_dates=None,
     ) -> pd.DataFrame:
-        """Macro factors are not cached yet - pass through to primary."""
+        """Macro factors pass through to primary.
+
+        The webapp caches macro data separately in macro_daily /
+        macro_monthly tables via webapp.services.macro_service.
+        """
         return self.primary.get_macro_factors(start_date, end_date, trading_dates)
 
     def get_universe(self) -> list[str]:

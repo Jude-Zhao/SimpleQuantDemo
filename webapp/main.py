@@ -8,6 +8,7 @@ from webapp.api.classifications import constraints_router, router as classificat
 from webapp.api.dashboard import router as dashboard_router
 from webapp.api.factors import router as factors_router
 from webapp.api.health import router as health_router
+from webapp.api.macro import router as macro_router
 from webapp.api.market import router as market_router
 from webapp.api.settings import router as settings_router
 from webapp.api.strategies import router as strategies_router
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(factors_router)
     app.include_router(market_router)
+    app.include_router(macro_router)
     app.include_router(universe_router)
     app.include_router(classifications_router)
     app.include_router(constraints_router)
