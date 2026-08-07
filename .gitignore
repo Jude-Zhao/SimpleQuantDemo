@@ -39,6 +39,7 @@ research/output/
 trading/output/
 data/raw/
 data/processed/
+data/simple_quant.db
 logs/
 .tmp_system_test/
 

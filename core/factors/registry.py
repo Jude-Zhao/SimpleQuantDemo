@@ -31,23 +31,39 @@ def register_factor(name: str | None = None) -> Callable[[type[FactorBuilder]], 
     return decorator
 
 
-def discover_factors(package_name: str = "core.factors") -> None:
-    """Auto-discover factor modules in the given package.
+# Modules that are infrastructure rather than factor implementations.
+# They are imported as dependencies, not scanned for @register_factor.
+_NON_FACTOR_MODULES = frozenset({"base", "registry", "utils", "exceptions", "__init__"})
 
-    Scans all .py modules (excluding base, registry, utils, __init__)
-    and imports them, which triggers @register_factor execution.
+
+def discover_factors(package_name: str = "core.factors") -> None:
+    """Auto-discover factor modules under the given package (recursively).
+
+    Imports every .py module in the package and its subpackages, which
+    triggers execution of any ``@register_factor`` decorators. Modules in
+    ``_NON_FACTOR_MODULES`` are skipped, as are private modules (``_*``).
     """
     global _discovered
     if _discovered:
         return
 
     package = importlib.import_module(package_name)
-    for _, module_name, _ in pkgutil.iter_modules(package.__path__):
-        if module_name in ("base", "registry", "utils", "__init__"):
-            continue
-        importlib.import_module(f"{package_name}.{module_name}")
+    _import_factor_modules(package, package_name)
 
     _discovered = True
+
+
+def _import_factor_modules(package: object, package_path: str) -> None:
+    """Recursively import all factor modules within a package."""
+    for _, module_name, is_pkg in pkgutil.iter_modules(package.__path__):
+        if module_name in _NON_FACTOR_MODULES or module_name.startswith("_"):
+            continue
+        full_name = f"{package_path}.{module_name}"
+        if is_pkg:
+            sub_package = importlib.import_module(full_name)
+            _import_factor_modules(sub_package, full_name)
+        else:
+            importlib.import_module(full_name)
 
 
 def get_factor_registry() -> dict[str, type[FactorBuilder]]:
