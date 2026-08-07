@@ -84,6 +84,10 @@ def test_calculate_backtest_summary_has_expected_fields(tmp_path: Path) -> None:
     assert summary["rebalance_count"] > 0
     assert summary["cost_sum"] >= 0
     assert -1 <= summary["max_drawdown"] <= 0
+    # Performance metrics are delegated to quantstats.
+    assert "sortino" in summary.index
+    assert "calmar" in summary.index
+    assert summary["sharpe"] == summary["sharpe"]  # not NaN on a valid run
 
 
 def test_research_cli_runs(tmp_path: Path) -> None:

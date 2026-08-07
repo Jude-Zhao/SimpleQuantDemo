@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import quantstats as qs
 
 from core.analysis import (
     analyze_collinearity,
@@ -143,24 +144,27 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
 
 
 def calculate_backtest_summary(result: BacktestResult, annualization: int = 252) -> pd.Series:
-    """Calculate basic performance statistics."""
-    daily_returns = result.daily_returns.astype(float)
+    """Calculate performance metrics with quantstats.
+
+    Metric calculations (annual return, volatility, Sharpe, drawdown,
+    Sortino, Calmar, win rate) are delegated to ``quantstats``. The
+    turnover / cost / rebalance counts are backtest-specific and kept
+    from the engine result.
+    """
+    returns = result.daily_returns.astype(float)
     equity_curve = result.equity_curve.astype(float)
     total_return = equity_curve.iloc[-1] - 1.0
-    periods = max(len(daily_returns), 1)
-    annual_return = equity_curve.iloc[-1] ** (annualization / periods) - 1.0
-    annual_volatility = daily_returns.std() * (annualization ** 0.5)
-    sharpe = annual_return / annual_volatility if annual_volatility and annual_volatility > 0 else float("nan")
-    drawdown = equity_curve / equity_curve.cummax() - 1.0
 
     return pd.Series(
         {
             "total_return": total_return,
-            "annual_return": annual_return,
-            "annual_volatility": annual_volatility,
-            "sharpe": sharpe,
-            "max_drawdown": drawdown.min(),
-            "win_rate": (daily_returns > 0).mean(),
+            "annual_return": qs.stats.cagr(returns, periods=annualization),
+            "annual_volatility": qs.stats.volatility(returns, periods=annualization),
+            "sharpe": qs.stats.sharpe(returns, periods=annualization),
+            "max_drawdown": qs.stats.max_drawdown(returns),
+            "sortino": qs.stats.sortino(returns, periods=annualization),
+            "calmar": qs.stats.calmar(returns, periods=annualization),
+            "win_rate": qs.stats.win_rate(returns),
             "turnover_sum": result.turnover.sum(),
             "cost_sum": result.costs.sum(),
             "rebalance_count": len(result.rebalance_dates),
