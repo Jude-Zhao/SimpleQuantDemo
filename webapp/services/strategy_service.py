@@ -33,6 +33,7 @@ from core.optimization import (
 )
 from core.synthesis import ICIRWeightedSynthesizer
 from research.backtest import BacktestConfig, BacktestResult, run_backtest
+from webapp.config import get_config
 from webapp.models.strategy_run import StrategyRun
 from webapp.schemas.strategy import (
     ConstraintViolationItem,
@@ -105,6 +106,30 @@ def get_strategy_meta(strategy_type: str) -> StrategyMeta | None:
 
 
 # ── Run orchestration ──────────────────────────────────────────────────
+
+def _prune_history_runs(db: Session, max_runs: int) -> None:
+    """Delete the oldest run records that exceed ``max_runs``.
+
+    Keeps ``strategy_runs`` bounded by deleting the oldest records by id
+    (creation order) once the total count goes above the configured limit.
+    """
+    if max_runs <= 0:
+        return
+
+    total = db.query(StrategyRun).count()
+    if total <= max_runs:
+        return
+
+    excess_ids = (
+        db.query(StrategyRun.id).order_by(StrategyRun.id.asc()).limit(total - max_runs)
+    )
+    ids = [row[0] for row in excess_ids]
+    if ids:
+        db.query(StrategyRun).filter(StrategyRun.id.in_(ids)).delete(
+            synchronize_session=False
+        )
+        db.commit()
+
 
 def run_strategy(
     db: Session,
@@ -190,6 +215,8 @@ def run_strategy(
             status="failed",
             error_msg=str(exc),
         )
+    finally:
+        _prune_history_runs(db, get_config().strategy.max_history_runs)
 
 
 def _build_classifications(db: Session) -> dict[str, dict[str, str]]:
