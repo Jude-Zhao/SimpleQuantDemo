@@ -84,7 +84,8 @@
             sidebar.classList.toggle("mobile-open");
             return;
         }
-        document.body.classList.toggle("sidebar-collapsed");
+        const collapsed = document.body.classList.toggle("sidebar-collapsed");
+        sidebar.classList.toggle("collapsed", collapsed);
     });
 
     burger.addEventListener("click", () => {

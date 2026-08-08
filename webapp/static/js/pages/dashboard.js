@@ -1,4 +1,4 @@
-/* Dashboard home page — three-row dashboard grid */
+/* Dashboard home page — stat cards + returns ranking + RankIC ranking + recent runs */
 
 function renderDashboard(container) {
     container.innerHTML = `
@@ -33,30 +33,41 @@ function renderDashboard(container) {
                 <div class="stat-value stat-value-sm" id="stat-status">-</div>
                 <div class="stat-detail" id="stat-detail">-</div>
             </div>
+        </div>
 
-            <div class="col-8">
-                <div class="card">
-                    <div class="card-title">
-                        ETF 走势
-                        <span class="text-muted" id="etf-freshness" style="font-size:12px;font-weight:400;"></span>
-                    </div>
-                    <div class="flex-between" style="margin-bottom:12px;">
-                        <div class="btn-group" id="etf-tabs">
-                            <button class="tab-pill" data-period="5">近 5 日</button>
-                            <button class="tab-pill active" data-period="20">近 20 日</button>
-                            <button class="tab-pill" data-period="60">近 60 日</button>
-                        </div>
-                        <select id="etf-select" class="form-select" multiple style="width:auto;min-width:180px;height:120px;" title="Ctrl/Shift 点击多选"></select>
-                    </div>
-                    <div id="etf-chart" class="chart"></div>
+        <div class="card" style="margin-top:var(--space-4);">
+            <div class="flex-between" style="flex-wrap:wrap;gap:var(--space-3);">
+                <div class="card-title" style="margin:0;">期间收益率排名</div>
+                <div class="form-group" style="margin:0;">
+                    <select id="ret-days" class="form-select" style="width:auto;">
+                        <option value="5">近 5 日</option>
+                        <option value="20" selected>近 20 日</option>
+                        <option value="60">近 60 日</option>
+                        <option value="120">近 120 日</option>
+                    </select>
                 </div>
             </div>
+            <div class="text-muted" style="font-size:12px;margin:8px 0 12px;" id="ret-rank-hint">加载中...</div>
+            <div class="grid-12">
+                <div class="col-6">
+                    <div class="card-title card-title-sm">动量 · TOP10 涨幅</div>
+                    <div id="momentum-chart" class="chart"></div>
+                </div>
+                <div class="col-6">
+                    <div class="card-title card-title-sm">反转 · BOTTOM10 跌幅</div>
+                    <div id="reversal-chart" class="chart"></div>
+                </div>
+            </div>
+        </div>
 
+        <div class="grid-12" style="margin-top:var(--space-4);">
             <div class="col-4">
                 <div class="card">
-                    <div class="card-title">因子 IC 排名</div>
+                    <div class="card-title">因子 RankIC 排名</div>
                     <div id="factor-ranking-chart" class="chart-sm"></div>
                 </div>
+            </div>
+            <div class="col-8">
                 <div class="card">
                     <div class="card-title">最近策略运行</div>
                     <table class="table" id="recent-runs-table" style="margin:-8px -4px;">
@@ -65,59 +76,25 @@ function renderDashboard(container) {
                     </table>
                 </div>
             </div>
-
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-title">净值曲线对比
-                        <span class="text-muted" id="nav-compare-hint" style="font-size:12px;font-weight:400;">最近 3 次成功运行</span>
-                    </div>
-                    <div id="nav-compare-chart" class="chart"></div>
-                </div>
-            </div>
         </div>
     `;
 
-    // Skeleton placeholder while loading
-    document.getElementById("etf-chart").parentElement.insertAdjacentHTML(
-        "beforeend",
-        `<div id="etf-skeleton">${Utils.skeleton(2)}</div>`
-    );
-
     loadStats();
-    loadEtfSelect();
+    loadReturnsRanking();
     loadFactorRanking();
     loadRecentRuns();
-    loadNavCompare();
 
     document.getElementById("btn-refresh-dashboard").addEventListener("click", () => {
         loadStats();
+        loadReturnsRanking();
         loadFactorRanking();
         loadRecentRuns();
-        loadNavCompare();
-        // Re-trigger ETF chart with current selection
-        const sel = document.getElementById("etf-select");
-        if (sel && selectedEtfCodes()) {
-            loadEtfChart(selectedEtfCodes(), currentPeriod());
-        }
         Components.toast("看板数据已刷新", "success", 1500);
     });
 
-    // Period tabs
-    const tabs = document.querySelectorAll("#etf-tabs .tab-pill");
-    tabs.forEach((tab) => {
-        tab.addEventListener("click", () => {
-            tabs.forEach((t) => t.classList.remove("active"));
-            tab.classList.add("active");
-            if (selectedEtfCodes()) {
-                loadEtfChart(selectedEtfCodes(), currentPeriod());
-            }
-        });
+    document.getElementById("ret-days").addEventListener("change", () => {
+        loadReturnsRanking();
     });
-}
-
-function currentPeriod() {
-    const active = document.querySelector("#etf-tabs .tab-pill.active");
-    return parseInt(active?.dataset.period || "20", 10);
 }
 
 async function loadStats() {
@@ -138,106 +115,73 @@ async function loadStats() {
     }
 }
 
-async function loadEtfSelect() {
-    try {
-        const universe = await API.getUniverse();
-        const select = document.getElementById("etf-select");
-        const codes = universe.map((u) => u.sec_code);
-        select.innerHTML = codes
-            .map((c) => `<option value="${c}">${c}</option>`)
-            .join("");
-        if (codes.length) {
-            // Preselect up to 5 codes for the initial multi-line chart
-            for (let i = 0; i < Math.min(5, select.options.length); i++) {
-                select.options[i].selected = true;
+function loadReturnsRanking() {
+    const days = parseInt(document.getElementById("ret-days").value, 10);
+    const momentumEl = document.getElementById("momentum-chart");
+    const reversalEl = document.getElementById("reversal-chart");
+    if (!momentumEl || !reversalEl) return;
+
+    momentumEl.innerHTML = Utils.skeleton(8);
+    reversalEl.innerHTML = Utils.skeleton(8);
+
+    API.request(`/api/dashboard/returns-ranking?days=${days}`)
+        .then((data) => {
+            const hint = document.getElementById("ret-rank-hint");
+            hint.textContent = data.as_of
+                ? `截至 ${data.as_of}，标的池 ${data.days} 个交易日区间收益率`
+                : "暂无数据";
+
+            if (!data.momentum.length) {
+                momentumEl.innerHTML = `<div class="empty-state"><div class="empty-title">暂无数据</div><div class="empty-desc">请先在标的池添加并同步行情</div></div>`;
+                reversalEl.innerHTML = "";
+                return;
             }
-            loadEtfChart(selectedEtfCodes(), currentPeriod());
-            select.addEventListener("change", () => {
-                if (selectedEtfCodes().length) {
-                    loadEtfChart(selectedEtfCodes(), currentPeriod());
-                }
-            });
-        } else {
-            document.getElementById("etf-chart").innerHTML =
-                `<div class="empty-state"><div class="empty-title">标的池为空</div><div class="empty-desc">请先在标的池页面添加 ETF</div></div>`;
-            document.getElementById("etf-skeleton")?.remove();
-        }
-    } catch (e) {
-        document.getElementById("etf-select").innerHTML = "<option>加载失败</option>";
-        document.getElementById("etf-skeleton")?.remove();
-    }
-}
-
-function selectedEtfCodes() {
-    const select = document.getElementById("etf-select");
-    if (!select) return "";
-    const codes = Array.from(select.selectedOptions).map((o) => o.value);
-    return codes.join(",");
-}
-
-function loadEtfChart(codes, days) {
-    const el = document.getElementById("etf-chart");
-    if (!el) return;
-    const skeletonEl = document.getElementById("etf-skeleton");
-    if (skeletonEl) skeletonEl.style.display = "none";
-
-    API.request(`/api/dashboard/etf-price?codes=${encodeURIComponent(codes)}`)
-        .then((points) => {
-            // Keep the last N trading days
-            const byCode = {};
-            points.forEach((p) => {
-                if (!byCode[p.sec_code]) byCode[p.sec_code] = [];
-                byCode[p.sec_code].push([p.date, p.close]);
-            });
-            const allDates = [...new Set(points.map((p) => p.date))].sort();
-            const cutoff = allDates[Math.max(0, allDates.length - days)];
-            const filtered = Object.entries(byCode).map(([code, pts]) => [
-                code,
-                pts.filter(([d]) => d >= cutoff),
-            ]);
-            const dates = [...new Set(filtered.flatMap(([, pts]) => pts.map((p) => p[0])))].sort();
-
-            const freshness = allDates.length ? `数据更新至 ${allDates[allDates.length - 1]}` : "";
-            const freshEl = document.getElementById("etf-freshness");
-            if (freshEl) freshEl.textContent = freshness;
-
-            Charts.render(el, () => ({
-                tooltip: {
-                    trigger: "axis",
-                    formatter: (params) => {
-                        let html = `<div class="tt-title">${params[0]?.axisValue || ""}</div>`;
-                        params.forEach((p) => {
-                            const color = p.color || Charts.semanticColor("zero");
-                            html += `<div class="tt-row">
-                                <span class="tt-dot" style="background:${color}"></span>
-                                <span>${Utils.escapeHtml(p.seriesName)}</span>
-                                <span class="tt-value">${Number(p.value).toFixed(3)}</span>
-                            </div>`;
-                        });
-                        return html;
-                    },
-                    className: "chart-tooltip-custom",
-                },
-                legend: { data: filtered.map(([code]) => code), top: 0 },
-                grid: { left: 56, right: 24, top: 36, bottom: 56 },
-                xAxis: { type: "category", data: dates },
-                yAxis: { type: "value", scale: true, axisLabel: { formatter: (v) => v.toFixed(2) } },
-                dataZoom: [{ type: "inside" }, { type: "slider", height: 16, bottom: 8 }],
-                series: filtered.map(([code, pts]) => ({
-                    name: code,
-                    type: "line",
-                    data: pts.map((p) => p[1]),
-                    smooth: true,
-                    showSymbol: false,
-                    lineStyle: { width: 1.5 },
-                    areaStyle: { opacity: 0.06 },
-                })),
-                extra: {},
-            }));
+            renderReturnBar(momentumEl, data.momentum);
+            renderReturnBar(reversalEl, data.reversal);
         })
         .catch((e) => {
-            el.innerHTML = `<div class="alert alert-error">加载行情失败: ${Utils.escapeHtml(e.message)}</div>`;
+            momentumEl.innerHTML = `<div class="alert alert-error">加载失败: ${Utils.escapeHtml(e.message)}</div>`;
+            reversalEl.innerHTML = "";
         });
+}
+
+function renderReturnBar(el, items) {
+    const up = Charts.semanticColor("up");
+    const down = Charts.semanticColor("down");
+    // Reverse so the first item appears at the top of the category axis.
+    const ordered = [...items].reverse();
+
+    Charts.render(el, () => ({
+        tooltip: {
+            trigger: "axis",
+            axisPointer: { type: "shadow" },
+            formatter: (params) => {
+                const p = params[0];
+                const item = ordered[p.dataIndex];
+                return `<div class="tt-title">${Utils.escapeHtml(item.sec_name)} (${Utils.escapeHtml(item.sec_code)})</div>
+                    <div class="tt-row"><span>区间收益</span><span class="tt-value">${Utils.formatPct(item.return_pct)}</span></div>`;
+            },
+            className: "chart-tooltip-custom",
+        },
+        grid: { left: 96, right: 64, top: 8, bottom: 24 },
+        xAxis: { type: "value", axisLabel: { formatter: (v) => (v * 100).toFixed(0) + "%" } },
+        yAxis: { type: "category", data: ordered.map((it) => it.sec_code) },
+        series: [{
+            type: "bar",
+            data: ordered.map((it) => ({
+                value: it.return_pct,
+                itemStyle: { color: it.return_pct >= 0 ? up : down, opacity: 0.9 },
+            })),
+            barWidth: 14,
+            label: {
+                show: true,
+                position: "right",
+                formatter: (p) => (p.value * 100).toFixed(1) + "%",
+                fontSize: 11,
+            },
+        }],
+        extra: {},
+    }));
 }
 
 function loadFactorRanking() {
@@ -250,9 +194,9 @@ function loadFactorRanking() {
                 el.innerHTML = `<div class="empty-state"><div class="empty-title">暂无因子数据</div></div>`;
                 return;
             }
-            const sorted = [...ranking].sort((a, b) => b.ic_mean - a.ic_mean);
+            const sorted = [...ranking].sort((a, b) => b.rank_ic_mean - a.rank_ic_mean);
             const names = sorted.map((r) => r.display_name || r.name);
-            const values = sorted.map((r) => r.ic_mean);
+            const values = sorted.map((r) => r.rank_ic_mean);
             const up = Charts.semanticColor("up");
             const down = Charts.semanticColor("down");
 
@@ -264,17 +208,17 @@ function loadFactorRanking() {
                         const p = params[0];
                         const item = sorted[p.dataIndex];
                         return `<div class="tt-title">${Utils.escapeHtml(p.name)}</div>
-                            <div class="tt-row"><span>IC 均值</span><span class="tt-value">${item.ic_mean.toFixed(4)}</span></div>
-                            <div class="tt-row"><span>ICIR</span><span class="tt-value">${item.icir.toFixed(4)}</span></div>`;
+                            <div class="tt-row"><span>RankIC 均值</span><span class="tt-value">${item.rank_ic_mean.toFixed(4)}</span></div>
+                            <div class="tt-row"><span>RankICIR</span><span class="tt-value">${item.rank_icir.toFixed(4)}</span></div>`;
                     },
                     className: "chart-tooltip-custom",
                 },
-                grid: { left: 96, right: 40, top: 8, bottom: 24 },
+                grid: { left: 96, right: 48, top: 8, bottom: 24 },
                 xAxis: { type: "value", axisLabel: { formatter: (v) => v.toFixed(2) } },
                 yAxis: { type: "category", data: names },
                 series: [{
                     type: "bar",
-                    data: values.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? up : down } })),
+                    data: values.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? up : down, opacity: 0.9 } })),
                     barWidth: 12,
                     label: {
                         show: true,
@@ -318,72 +262,6 @@ function loadRecentRuns() {
         })
         .catch((e) => {
             tbody.innerHTML = `<tr><td colspan="4" class="text-muted">加载失败: ${Utils.escapeHtml(e.message)}</td></tr>`;
-        });
-}
-
-function loadNavCompare() {
-    const el = document.getElementById("nav-compare-chart");
-    if (!el) return;
-    const hint = document.getElementById("nav-compare-hint");
-
-    API.request("/api/dashboard/recent-runs?limit=6")
-        .then((runs) => {
-            const successRuns = runs.filter((r) => r.status === "success").slice(0, 3);
-            if (!successRuns.length) {
-                el.innerHTML = `<div class="empty-state"><div class="empty-title">暂无净值数据</div><div class="empty-desc">运行策略后这里将展示净值曲线对比</div></div>`;
-                return;
-            }
-            hint.textContent = `最近 ${successRuns.length} 次成功运行`;
-
-            return Promise.all(
-                successRuns.map((r) =>
-                    API.request(`/api/strategies/runs/${r.id}`).catch(() => null)
-                )
-            );
-        })
-        .then((details) => {
-            const valid = (details || []).filter(Boolean);
-            const series = valid.map((d) => {
-                const curve = d.result_summary?.equity_curve || d.result_summary?.nav_series || {};
-                return {
-                    name: `#${d.id} ${d.strategy_type}`,
-                    curve: Object.entries(curve).sort((a, b) => a[0].localeCompare(b[0])),
-                };
-            });
-            const allDates = [...new Set(series.flatMap((s) => s.curve.map(([d]) => d)))]
-                .filter(Boolean)
-                .sort();
-
-            if (!allDates.length || !series.length) {
-                el.innerHTML = `<div class="empty-state"><div class="empty-title">暂无净值数据</div><div class="empty-desc">运行策略后这里将展示净值曲线对比</div></div>`;
-                return;
-            }
-
-            Charts.render(el, () => ({
-                tooltip: { trigger: "axis", className: "chart-tooltip-custom" },
-                legend: { top: 0 },
-                grid: { left: 64, right: 24, top: 36, bottom: 56 },
-                xAxis: { type: "category", data: allDates },
-                yAxis: { type: "value", scale: true },
-                dataZoom: [{ type: "inside" }, { type: "slider", height: 16, bottom: 8 }],
-                series: series.map((s, i) => ({
-                    name: s.name,
-                    type: "line",
-                    data: allDates.map((d) => {
-                        const hit = s.curve.find(([cd]) => cd === d);
-                        return hit ? hit[1] : null;
-                    }),
-                    connectNulls: true,
-                    smooth: true,
-                    showSymbol: false,
-                    lineStyle: { width: i === 0 ? 2.5 : 1.5 },
-                    areaStyle: i === 0 ? { opacity: 0.06 } : undefined,
-                })),
-                extra: {},
-            }));
-        })
-        .catch((e) => {
-            el.innerHTML = `<div class="alert alert-error">加载净值对比失败: ${Utils.escapeHtml(e.message)}</div>`;
         });
 }
 

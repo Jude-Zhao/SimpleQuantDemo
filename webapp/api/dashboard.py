@@ -33,8 +33,21 @@ class PricePoint(BaseModel):
 class FactorRankingItem(BaseModel):
     name: str
     display_name: str
-    ic_mean: float
-    icir: float
+    rank_ic_mean: float
+    rank_icir: float
+
+
+class ReturnRankingItem(BaseModel):
+    sec_code: str
+    sec_name: str
+    return_pct: float
+
+
+class ReturnRankingResponse(BaseModel):
+    days: int
+    as_of: str
+    momentum: list[ReturnRankingItem]
+    reversal: list[ReturnRankingItem]
 
 
 class RecentRunItem(BaseModel):
@@ -97,7 +110,7 @@ def get_etf_price_series(
 
 @router.get("/factor-ranking", response_model=list[FactorRankingItem])
 def get_factor_ranking(db: Session = Depends(get_db)):
-    """Compute IC mean/ICIR for recent factors for ranking display.
+    """Compute RankIC mean/IR for recent factors for ranking display.
 
     Uses a lightweight computation from the first available date range.
     """
@@ -126,13 +139,60 @@ def get_factor_ranking(db: Session = Depends(get_db)):
             ranking.append(FactorRankingItem(
                 name=result.factor_name,
                 display_name=result.display_name,
-                ic_mean=result.ic_result.ic_mean,
-                icir=result.ic_result.icir,
+                rank_ic_mean=result.ic_result.rank_ic_mean,
+                rank_icir=result.ic_result.rank_icir,
             ))
         except Exception:
             # Skip factors that fail on the default data range.
             continue
     return ranking
+
+
+@router.get("/returns-ranking", response_model=ReturnRankingResponse)
+def get_returns_ranking(
+    days: int = Query(20, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """Rank universe ETFs by trailing ``days``-day return.
+
+    ``momentum`` is the top-10 highest-returning ETFs (buy-winners logic),
+    ``reversal`` the bottom-10 lowest-returning ETFs (buy-losers logic).
+    """
+    etfs = get_etf_list(db)
+    if not etfs:
+        return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
+    universe = [e["sec_code"] for e in etfs]
+    name_map = {e["sec_code"]: e["sec_name"] for e in etfs}
+
+    price_data = get_etf_price(db, universe, DEFAULT_START, DEFAULT_END)
+    if price_data.empty:
+        return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
+
+    piv = price_data.pivot(index="date", columns="sec", values="close").sort_index()
+    piv = piv.dropna(how="all")
+    if len(piv) < 2:
+        return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
+
+    window = piv.iloc[-days:]
+    if len(window) < 2:
+        return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
+
+    ret = (window.iloc[-1] / window.iloc[0] - 1).dropna().sort_values(ascending=False)
+
+    as_of_ts = piv.index[-1]
+    as_of = str(as_of_ts.date()) if hasattr(as_of_ts, "date") else str(as_of_ts)
+
+    def item(sec_code: str, return_pct: float) -> ReturnRankingItem:
+        return ReturnRankingItem(
+            sec_code=sec_code,
+            sec_name=name_map.get(sec_code, sec_code),
+            return_pct=float(return_pct),
+        )
+
+    momentum = [item(c, v) for c, v in ret.head(10).items()]
+    reversal = [item(c, v) for c, v in ret.tail(10).sort_values(ascending=True).items()]
+
+    return ReturnRankingResponse(days=days, as_of=as_of, momentum=momentum, reversal=reversal)
 
 
 @router.get("/recent-runs", response_model=list[RecentRunItem])

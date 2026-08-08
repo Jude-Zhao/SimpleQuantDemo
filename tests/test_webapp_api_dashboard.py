@@ -52,5 +52,16 @@ def test_dashboard_factor_ranking():
     assert isinstance(data, list)
     for item in data:
         assert "name" in item
-        assert "ic_mean" in item
-        assert "icir" in item
+        assert "rank_ic_mean" in item
+        assert "rank_icir" in item
+
+
+def test_dashboard_returns_ranking():
+    response = client.get("/api/dashboard/returns-ranking?days=20")
+    assert response.status_code == 200
+    data = response.json()
+    assert "days" in data
+    assert "as_of" in data
+    assert "momentum" in data
+    assert "reversal" in data
+    assert data["days"] == 20
