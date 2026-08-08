@@ -22,6 +22,7 @@ class DatasourceConfig(BaseModel):
     cache_enabled: bool = True
     cache_days_daily: int = 365
     cache_days_minute: int = 60
+    jump_threshold: float = 15.0  # 单日涨跌幅(%)超此值视为疑似未复权拆分/异常，写入时拦截
 
 
 class SyncConfig(BaseModel):

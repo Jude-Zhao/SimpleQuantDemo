@@ -7,9 +7,15 @@ signatures vary by endpoint and version.
 
 from __future__ import annotations
 
+import time
 from typing import Sequence
 
 import pandas as pd
+
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None
 
 from core.data.base import DataSource
 
@@ -80,49 +86,168 @@ class AkShareDataSource(DataSource):
 
         all_frames: list[pd.DataFrame] = []
         for sec_code in sec_codes:
-            try:
-                sina_code = self._to_sina_code(sec_code)
-                df = ak.fund_etf_hist_sina(symbol=sina_code)
-                if df.empty:
-                    continue
-
-                df = df.rename(columns={
-                    "date": "date",
-                    "open": "open",
-                    "high": "high",
-                    "low": "low",
-                    "close": "close",
-                    "volume": "volume",
-                    "amount": "amount",
-                })
-                df["sec"] = sec_code
-                df["date"] = pd.to_datetime(df["date"])
-
-                # Filter by date range
-                if start_date is not None:
-                    df = df[df["date"] >= pd.Timestamp(start_date)]
-                if end_date is not None:
-                    df = df[df["date"] <= pd.Timestamp(end_date)]
-
-                if not df.empty:
-                    all_frames.append(df[["date", "sec", "open", "high", "low", "close", "volume", "amount"]])
-            except Exception:
-                continue
+            # Prefer Eastmoney with 后复权(hfq) + adj_factor; fall back to Sina.
+            df = self._fetch_hfq_price(ak, sec_code, start_date, end_date)
+            if df.empty:
+                df = self._fetch_sina_price(ak, sec_code, start_date, end_date)
+            if not df.empty:
+                all_frames.append(df)
 
         if not all_frames:
             return pd.DataFrame(columns=["date", "sec", "open", "high", "low", "close", "volume", "amount"])
 
         result = pd.concat(all_frames, ignore_index=True)
-        for col in ["open", "high", "low", "close", "volume", "amount"]:
+        numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+        if "adj_factor" in result.columns:
+            numeric_cols.append("adj_factor")
+        for col in numeric_cols:
             result[col] = pd.to_numeric(result[col], errors="coerce")
 
         return result.sort_values(["date", "sec"]).reset_index(drop=True)
 
     @staticmethod
     def _to_sina_code(sec_code: str) -> str:
-        """Convert 510300.SH -> sh510300 for Sina ETF API."""
+        """Convert 510300.SH -> sh510300 for Sina/Tencent ETF API."""
         code, market = sec_code.split(".")
         return f"{market.lower()}{code}"
+
+    def _fetch_sina_price(
+        self,
+        ak,
+        sec_code: str,
+        start_date: str | pd.Timestamp | None,
+        end_date: str | pd.Timestamp | None,
+    ) -> pd.DataFrame:
+        """Fetch unadjusted OHLCV from Sina (fallback). Returns standard columns."""
+        try:
+            sina_code = self._to_sina_code(sec_code)
+            df = ak.fund_etf_hist_sina(symbol=sina_code)
+            if df.empty:
+                return pd.DataFrame()
+            df = df.rename(columns={
+                "date": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "volume",
+                "amount": "amount",
+            })
+            df["sec"] = sec_code
+            df["date"] = pd.to_datetime(df["date"])
+            df = self._filter_by_date(df, start_date, end_date)
+            return df[["date", "sec", "open", "high", "low", "close", "volume", "amount"]]
+        except Exception:
+            return pd.DataFrame()
+
+    def _fetch_hfq_price(
+        self,
+        ak,
+        sec_code: str,
+        start_date: str | pd.Timestamp | None,
+        end_date: str | pd.Timestamp | None,
+    ) -> pd.DataFrame:
+        """Fetch 后复权(hfq) OHLCV from the Tencent fqkline endpoint.
+
+        Tencent is used because it is the reachable source that correctly
+        adjusts for ETF share splits in this deployment's network (Eastmoney
+        is blocked and Baostock's adjust flag leaves split cliffs). The
+        endpoint caps each request at 640 rows, so history is fetched in
+        per-year segments. ``adj_factor = hfq_close / raw_close`` lets a true
+        market price be recovered via close / adj_factor.
+        """
+        hs_code = self._to_sina_code(sec_code)
+        start = pd.Timestamp(start_date).strftime("%Y-%m-%d") if start_date else "1990-01-01"
+        end = pd.Timestamp(end_date).strftime("%Y-%m-%d") if end_date else pd.Timestamp.now().strftime("%Y-%m-%d")
+        if start[:4] > end[:4]:
+            return pd.DataFrame()
+
+        hfq_rows = self._tencent_fetch_range(hs_code, start, end, "hfq")
+        if not hfq_rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([self._tencent_row_map(r, sec_code) for r in hfq_rows])
+        df = df.drop_duplicates(subset="date", keep="last")
+        df = df.sort_values("date").reset_index(drop=True)
+
+        # Compute weekly-free adj_factor from the unadjusted series.
+        raw_rows = self._tencent_fetch_range(hs_code, start, end, "")
+        if raw_rows:
+            raw_df = pd.DataFrame(
+                [{"date": pd.Timestamp(r[0]), "raw_close": float(r[2])} for r in raw_rows]
+            ).drop_duplicates(subset="date", keep="last")
+            df = df.merge(raw_df, on="date", how="left")
+            df["adj_factor"] = df["close"] / df["raw_close"]
+            df = df.drop(columns=["raw_close"])
+        else:
+            df["adj_factor"] = float("nan")
+
+        return self._filter_by_date(df, start_date, end_date)
+
+    @classmethod
+    def _tencent_row_map(cls, row: list, sec_code: str) -> dict:
+        """Map a Tencent kline row [date, open, close, high, low, vol, ...]."""
+        return {
+            "date": pd.Timestamp(row[0]),
+            "sec": sec_code,
+            "open": float(row[1]),
+            "close": float(row[2]),
+            "high": float(row[3]),
+            "low": float(row[4]),
+            "volume": float(row[5]) if len(row) > 5 else 0.0,
+            "amount": float(row[6]) if len(row) > 6 and row[6] else 0.0,
+        }
+
+    @staticmethod
+    def _tencent_fetch_range(
+        hs_code: str,
+        start: str,
+        end: str,
+        fq: str,
+        retries: int = 3,
+    ) -> list[list]:
+        """Fetch kline rows for a date range, split into per-year segments."""
+        if requests is None:
+            return []
+        out: list[list] = []
+        for year in range(int(start[:4]), int(end[:4]) + 1):
+            seg_start = f"{year}-01-01"
+            seg_end = f"{year}-12-31" if year < int(end[:4]) else end
+            rows = AkShareDataSource._tencent_get(hs_code, seg_start, seg_end, fq, retries)
+            out.extend(rows)
+        return out
+
+    @staticmethod
+    def _tencent_get(hs_code: str, start: str, end: str, fq: str, retries: int) -> list[list]:
+        url = (
+            "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+            f"?param={hs_code},day,{start},{end},640,{fq}"
+        )
+        for _ in range(retries):
+            try:
+                resp = requests.get(url, timeout=20)
+                entry = resp.json().get("data", {}).get(hs_code, {})
+                if isinstance(entry, list):
+                    entry = {}
+                key = "hfqday" if fq == "hfq" else ("qfqday" if fq == "qfq" else "day")
+                if key not in entry:
+                    key = "day"
+                return entry.get(key) or []
+            except Exception:
+                time.sleep(0.8)
+        return []
+
+    @staticmethod
+    def _filter_by_date(
+        df: pd.DataFrame,
+        start_date: str | pd.Timestamp | None,
+        end_date: str | pd.Timestamp | None,
+    ) -> pd.DataFrame:
+        if start_date is not None:
+            df = df[df["date"] >= pd.Timestamp(start_date)]
+        if end_date is not None:
+            df = df[df["date"] <= pd.Timestamp(end_date)]
+        return df
 
     # ── Macro factors ────────────────────────────────────────
 

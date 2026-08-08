@@ -101,7 +101,7 @@ class BaostockDataSource(DataSource):
                 start_date=start_str,
                 end_date=end_str,
                 frequency=frequency,
-                adjustflag="2",  # 前复权
+                adjustflag="1",  # 后复权
             )
             if rs.error_code != "0":
                 continue

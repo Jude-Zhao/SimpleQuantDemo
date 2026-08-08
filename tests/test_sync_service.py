@@ -95,3 +95,75 @@ def test_etf_sync_schema(db):
     assert len(rows) == 1
     assert rows[0].sec_code == "510300.SH"
     assert rows[0].close == pytest.approx(3.53)
+
+
+def test_write_etf_data_adj_factor(db):
+    """adj_factor column is persisted; NaN becomes NULL."""
+    from webapp.models.market_data import EtfDailyBar
+
+    from webapp.services.sync_service import _write_etf_data
+
+    df = pd.DataFrame(
+        [
+            {
+                "date": pd.Timestamp("2024-01-02"),
+                "sec": "510300.SH",
+                "open": 3.5,
+                "high": 3.55,
+                "low": 3.45,
+                "close": 3.53,
+                "volume": 1000,
+                "amount": 3500,
+                "adj_factor": 1.5,
+            },
+            {
+                "date": pd.Timestamp("2024-01-03"),
+                "sec": "510300.SH",
+                "open": 3.6,
+                "high": 3.65,
+                "low": 3.55,
+                "close": 3.6,
+                "volume": 1000,
+                "amount": 3500,
+                "adj_factor": float("nan"),
+            },
+        ]
+    )
+    _write_etf_data(db, df, "daily")
+    rows = db.query(EtfDailyBar).order_by(EtfDailyBar.trade_date).all()
+    assert rows[0].adj_factor == pytest.approx(1.5)
+    assert rows[1].adj_factor is None
+
+
+def test_filter_jump_anomalies_blocks_unadjusted_cliff():
+    """Unadjusted data (no adj_factor) with a >15% cliff row is dropped."""
+    from webapp.services.sync_service import _filter_jump_anomalies
+
+    df = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-04-20"), "sec": "513660.SH", "close": 3.128},
+            {"date": pd.Timestamp("2026-04-21"), "sec": "513660.SH", "close": 1.569},
+            {"date": pd.Timestamp("2026-04-22"), "sec": "513660.SH", "close": 1.554},
+        ]
+    )
+    filtered, warnings = _filter_jump_anomalies(df, threshold=15.0)
+    assert len(filtered) == 2
+    assert len(warnings) == 1
+    assert warnings[0]["date"] == "2026-04-21"
+    assert filtered["close"].tolist() == [3.128, 1.554]
+
+
+def test_filter_jump_anomalies_keeps_adjusted_data():
+    """hfq data (with adj_factor) is trusted: real >15% moves are kept."""
+    from webapp.services.sync_service import _filter_jump_anomalies
+
+    df = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2024-09-30"), "sec": "159915.SZ", "close": 2.232, "adj_factor": 1.0},
+            {"date": pd.Timestamp("2024-10-08"), "sec": "159915.SZ", "close": 2.678, "adj_factor": 1.0},
+            {"date": pd.Timestamp("2024-10-09"), "sec": "159915.SZ", "close": 2.242, "adj_factor": 1.0},
+        ]
+    )
+    filtered, warnings = _filter_jump_anomalies(df, threshold=15.0)
+    assert len(filtered) == 3
+    assert warnings == []

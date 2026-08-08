@@ -1081,7 +1081,7 @@ class BaostockDataSource(DataSource):
                 start_date=start_date,
                 end_date=end_date,
                 frequency="d",
-                adjustflag="2",  # 前复权
+                adjustflag="1",  # 后复权
             )
             data_list = []
             while (rs.error_code == '0') & rs.next():

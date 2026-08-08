@@ -144,12 +144,16 @@ def _run_etf_sync(
             task.status = SyncStatus.RUNNING
             task.message = "开始同步..."
 
+        from webapp.config import get_config
+        _jump_threshold = get_config().datasource.jump_threshold
+
         primary = _get_primary_source()
         secondary = _get_secondary_source()
 
         success_count = 0
         failed_codes: list[str] = []
         total_rows = 0
+        all_warnings: list[dict] = []
 
         for i, sec_code in enumerate(sec_codes, 1):
             try:
@@ -168,7 +172,12 @@ def _run_etf_sync(
                         task.current = i
                     continue
 
-                # 3. Write new data
+                # 3. 断崖校验：剔除疑似未复权的拆分/异常跳变，阻止坏数据入库
+                df, jump_warnings = _filter_jump_anomalies(df, threshold=_jump_threshold)
+                if jump_warnings:
+                    all_warnings.extend(jump_warnings)
+
+                # 4. Write new data
                 rows_written = _write_etf_data(db, df, period)
                 total_rows += rows_written
                 success_count += 1
@@ -188,6 +197,8 @@ def _run_etf_sync(
                 "failed_count": len(failed_codes),
                 "failed_codes": failed_codes,
                 "total_rows": total_rows,
+                "warnings": all_warnings,
+                "warning_count": len(all_warnings),
             }
 
     except Exception as e:
@@ -268,6 +279,41 @@ def _fetch_etf_safe(primary, secondary, sec_codes, start_date, end_date, period)
     return pd.DataFrame()
 
 
+def _filter_jump_anomalies(
+    df: pd.DataFrame,
+    threshold: float = 15.0,
+) -> tuple[pd.DataFrame, list[dict]]:
+    """Drop rows whose daily close change exceeds ``threshold`` percent.
+
+    Only applies to unadjusted fallback data. Tencent hfq rows carry an
+    ``adj_factor`` column and are already properly adjusted, so a >15% move
+    there is a real market event (e.g. the 2024-09 A-share rally) and must be
+    kept. Rows without ``adj_factor`` (Sina unadjusted / Baostock fallback)
+    can hide a share split cliff (~-50%), so they are dropped with a warning
+    to prevent bad rows from polluting factor calculations.
+    """
+    if df.empty:
+        return df, []
+    if "adj_factor" in df.columns:
+        return df, []
+    keep = pd.Series(True, index=df.index)
+    warnings: list[dict] = []
+    for sec in df["sec"].unique():
+        sub = df[df["sec"] == sec].sort_values("date").copy()
+        sub["chg"] = sub["close"].pct_change(fill_method=None) * 100
+        bad = sub[sub["chg"].abs() > threshold]
+        for _, r in bad.iterrows():
+            warnings.append(
+                {
+                    "sec": sec,
+                    "date": str(pd.Timestamp(r["date"]).date()),
+                    "chg": round(float(r["chg"]), 2) if pd.notna(r["chg"]) else None,
+                }
+            )
+        keep.loc[sub.index] = sub["chg"].fillna(0).abs() <= threshold
+    return df[keep], warnings
+
+
 def _write_etf_data(db: Session, df: pd.DataFrame, period: str) -> int:
     """Write ETF data to cache. Returns number of rows written."""
     if df.empty:
@@ -280,6 +326,12 @@ def _write_etf_data(db: Session, df: pd.DataFrame, period: str) -> int:
             date_val = pd.to_datetime(row["date"]).date()
             bar_id = f"{sec}_{date_val.isoformat()}"
 
+            adj_factor = row.get("adj_factor")
+            if adj_factor is not None and pd.notna(adj_factor):
+                adj_factor = float(adj_factor)
+            else:
+                adj_factor = None
+
             bar = EtfDailyBar(
                 id=bar_id,
                 sec_code=sec,
@@ -290,6 +342,7 @@ def _write_etf_data(db: Session, df: pd.DataFrame, period: str) -> int:
                 close=float(row.get("close", 0)),
                 volume=float(row.get("volume", 0)),
                 amount=float(row.get("amount", 0)),
+                adj_factor=adj_factor,
                 source=row.get("source", "baostock"),
             )
             db.add(bar)
