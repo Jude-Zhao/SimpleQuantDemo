@@ -75,17 +75,3 @@ def test_remove_nonexistent():
 def test_add_empty_batch():
     response = client.post("/api/universe", json={"items": []})
     assert response.status_code == 400
-
-
-def test_available_etfs():
-    response = client.get("/api/universe/available")
-    assert response.status_code == 200
-    data = response.json()
-    assert isinstance(data, list)
-    assert len(data) >= 5
-    # Each item should have in_universe flag
-    for item in data:
-        assert "sec_code" in item
-        assert "sec_name" in item
-        assert "in_universe" in item
-        assert isinstance(item["in_universe"], bool)

@@ -216,18 +216,29 @@ def get_etf_price(
 def get_etf_list(db: Session | None = None) -> list[dict]:
     """Get list of available ETFs.
 
-    Returns a curated default list for now.
-    TODO: fetch from data source when available.
+    Returns the active universe from ``universe_items`` (single source of
+    truth for the watchlist). The ``category`` field comes from the
+    classification rule engine's ``asset_type`` dimension to stay consistent
+    with the classification page and strategy constraint validation.
+
+    Returns an empty list when no DB session is available.
     """
+    if db is None:
+        return []
+    from webapp.services.classification_service import classify_universe
+    from webapp.services.universe_service import list_active_universe
+
+    items = list_active_universe(db)
+    if not items:
+        return []
+    results = classify_universe(db)
+    cat_by_sec = {r.sec_code: r.categories for r in results}
+
     return [
-        {"sec_code": "510300.SH", "sec_name": "沪深300ETF", "category": "宽基"},
-        {"sec_code": "510500.SH", "sec_name": "中证500ETF", "category": "宽基"},
-        {"sec_code": "159915.SZ", "sec_name": "创业板ETF", "category": "宽基"},
-        {"sec_code": "518880.SH", "sec_name": "黄金ETF", "category": "商品"},
-        {"sec_code": "511010.SH", "sec_name": "国债ETF", "category": "债券"},
-        {"sec_code": "510050.SH", "sec_name": "上证50ETF", "category": "宽基"},
-        {"sec_code": "510880.SH", "sec_name": "红利ETF", "category": "策略"},
-        {"sec_code": "159901.SZ", "sec_name": "深100ETF", "category": "宽基"},
-        {"sec_code": "510180.SH", "sec_name": "上证180ETF", "category": "宽基"},
-        {"sec_code": "159919.SZ", "sec_name": "沪深300ETF(嘉实)", "category": "宽基"},
+        {
+            "sec_code": item.sec_code,
+            "sec_name": item.sec_name,
+            "category": cat_by_sec.get(item.sec_code, {}).get("asset_type", ""),
+        }
+        for item in items
     ]

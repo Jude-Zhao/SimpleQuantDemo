@@ -31,4 +31,4 @@ def test_list_etfs_has_expected_categories():
     categories = set(e["category"] for e in data)
     assert "宽基" in categories
     assert "商品" in categories
-    assert "债券" in categories
+    assert "跨境" in categories

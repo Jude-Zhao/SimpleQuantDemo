@@ -11,7 +11,6 @@ from webapp.schemas.universe import (
     UniverseItemCreate,
     UniverseItemResponse,
 )
-from webapp.services.data_service import get_etf_list
 from webapp.services.universe_service import (
     add_universe_item,
     batch_add_universe,
@@ -45,18 +44,3 @@ def remove_from_universe(sec_code: str, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="ETF not found in universe")
     return {"success": True, "sec_code": sec_code}
-
-
-@router.get("/available")
-def get_available_etfs(db: Session = Depends(get_db)):
-    """Get list of ETFs available to add to the universe."""
-    all_etfs = get_etf_list(db)
-    active_codes = {item.sec_code for item in list_active_universe(db)}
-
-    result = []
-    for etf in all_etfs:
-        result.append({
-            **etf,
-            "in_universe": etf["sec_code"] in active_codes,
-        })
-    return result

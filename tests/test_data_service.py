@@ -27,10 +27,21 @@ def test_db():
         db.close()
 
 
-def test_get_etf_list():
-    etfs = get_etf_list()
+def test_get_etf_list(test_db):
+    """get_etf_list returns the active universe from the DB."""
+    from webapp.models.universe import UniverseItem
+
+    for code, name in [
+        ("510300.SH", "沪深300ETF"),
+        ("510500.SH", "中证500ETF"),
+        ("159915.SZ", "创业板ETF"),
+    ]:
+        test_db.add(UniverseItem(sec_code=code, sec_name=name))
+    test_db.commit()
+
+    etfs = get_etf_list(test_db)
     assert isinstance(etfs, list)
-    assert len(etfs) >= 5
+    assert len(etfs) == 3
     codes = [e["sec_code"] for e in etfs]
     assert "510300.SH" in codes
     assert "510500.SH" in codes
@@ -40,6 +51,9 @@ def test_get_etf_list():
         assert "sec_code" in e
         assert "sec_name" in e
         assert "category" in e
+
+    # Without a DB session it returns an empty list.
+    assert get_etf_list() == []
 
 
 def test_get_etf_price_uses_cache(test_db):

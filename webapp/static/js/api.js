@@ -63,10 +63,6 @@ const API = {
         return this.request(`/api/universe/${secCode}`, { method: "DELETE" });
     },
 
-    async getAvailableEtfs() {
-        return this.request("/api/universe/available");
-    },
-
     // ── Classification ─────────────────────────────────────
     async listRules(activeOnly = true) {
         return this.request(`/api/classifications/rules?active_only=${activeOnly}`);

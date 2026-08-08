@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from webapp.models.constraint_config import ConstraintConfig
 from webapp.models.database import get_db
 from webapp.schemas.classification import (
     ClassificationRuleCreate,
@@ -65,23 +66,36 @@ def apply_classification(db: Session = Depends(get_db)):
 
 # ── Constraints ────────────────────────────────────────────────────────
 
-# In-memory constraints storage for now.
-# TODO: persist constraints in DB when we have a proper constraints model.
-_constraints = OptimizationConstraints(
+# Defaults used when no persisted config exists yet.
+_DEFAULT_CONSTRAINTS = OptimizationConstraints(
     single_max_weight=0.15,
     category_constraints=[],
 )
 
 
+def _load_constraints(db: Session) -> OptimizationConstraints:
+    row = db.query(ConstraintConfig).order_by(ConstraintConfig.id).first()
+    if row is None or not row.config:
+        return _DEFAULT_CONSTRAINTS.model_copy(deep=True)
+    return OptimizationConstraints(**row.config)
+
+
 @constraints_router.get("", response_model=OptimizationConstraints)
-def get_constraints():
+def get_constraints(db: Session = Depends(get_db)):
     """Get current optimization constraints configuration."""
-    return _constraints
+    return _load_constraints(db)
 
 
 @constraints_router.put("", response_model=OptimizationConstraints)
-def update_constraints(req: ConstraintsSaveRequest):
-    """Update optimization constraints configuration."""
-    global _constraints
-    _constraints = req.constraints
-    return _constraints
+def update_constraints(req: ConstraintsSaveRequest, db: Session = Depends(get_db)):
+    """Update optimization constraints configuration (persisted to DB)."""
+    data = req.constraints.model_dump()
+    row = db.query(ConstraintConfig).order_by(ConstraintConfig.id).first()
+    if row is None:
+        row = ConstraintConfig(config=data)
+        db.add(row)
+    else:
+        row.config = data
+    db.commit()
+    db.refresh(row)
+    return OptimizationConstraints(**row.config)
