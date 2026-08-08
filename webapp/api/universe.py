@@ -18,6 +18,7 @@ from webapp.services.universe_service import (
     list_active_universe,
     remove_universe_item,
 )
+from webapp.services.classification_service import ensure_classification
 
 router = APIRouter(prefix="/api/universe", tags=["universe"])
 
@@ -34,6 +35,11 @@ def add_to_universe(req: UniverseBatchAddRequest, db: Session = Depends(get_db))
     if not req.items:
         raise HTTPException(status_code=400, detail="No items provided")
     items = batch_add_universe(db, req.items)
+    # Apply per-item classifications by upserting manual rules so the new
+    # ETFs are classified immediately via the rule engine.
+    for item in req.items:
+        if item.classification:
+            ensure_classification(db, item.sec_code, item.classification)
     return items
 
 

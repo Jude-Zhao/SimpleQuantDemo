@@ -73,6 +73,59 @@ def delete_rule(db: Session, rule_id: int) -> bool:
 
 # ── Classification Engine ──────────────────────────────────────────────
 
+def ensure_classification(
+    db: Session,
+    sec_code: str,
+    categories: dict[str, str],
+) -> None:
+    """Assign ``categories`` to ``sec_code`` by upserting manual rules.
+
+    For each (category_key, category_value) pair, appends ``sec_code`` to the
+    ``sec_codes`` of the matching manual rule, creating the rule if none
+    exists. This keeps the rule engine the single source of truth so a newly
+    added ETF is classified immediately and stays consistent with the
+    classification page.
+    """
+    if not categories:
+        return
+    rules = (
+        db.query(ClassificationRule)
+        .filter(ClassificationRule.rule_type == "manual")
+        .all()
+    )
+    for category_key, category_value in categories.items():
+        if not category_value:
+            continue
+        rule = next(
+            (
+                r
+                for r in rules
+                if r.category_key == category_key
+                and r.config.get("category_value") == category_value
+            ),
+            None,
+        )
+        if rule is None:
+            rule = ClassificationRule(
+                rule_name=f"{category_key}-{category_value}",
+                category_key=category_key,
+                rule_type="manual",
+                config={"category_value": category_value, "sec_codes": []},
+                is_active=True,
+                priority=100,
+            )
+            db.add(rule)
+            rules.append(rule)
+            db.flush()
+        # Assign a new dict (not in-place mutation): plain JSON columns do not
+        # track in-place edits, so mutating the existing dict would silently
+        # fail to persist the appended code.
+        sec_codes = rule.config.get("sec_codes", [])
+        if sec_code not in sec_codes:
+            rule.config = {**rule.config, "sec_codes": [*sec_codes, sec_code]}
+    db.commit()
+
+
 def classify_universe(db: Session) -> list[ClassificationResult]:
     """Apply all active classification rules to the active universe.
 

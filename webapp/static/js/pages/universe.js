@@ -23,8 +23,35 @@ function renderUniverse(container) {
                 <label>ETF 代码（每行一个；可带名称，自动识别 .SH/.SZ 后缀）</label>
                 <textarea id="add-etf-input" class="form-control" rows="4" placeholder="510300.SH 或 510300 沪深300ETF&#10;159915.SZ 或 159915 创业板ETF"></textarea>
             </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label>三维分类（可选；留"不指定"则需之后到「分类约束」页配置）</label>
+                <div class="grid-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+                    <div>
+                        <label style="font-size:12px;color:var(--text-secondary, #6e6e6e);">资产类别</label>
+                        <select id="add-asset-type" class="form-select"></select>
+                        <input id="add-asset-type-custom" class="form-control" style="display:none;margin-top:6px;" placeholder="自定义取值" />
+                    </div>
+                    <div>
+                        <label style="font-size:12px;color:var(--text-secondary, #6e6e6e);">风格</label>
+                        <select id="add-style" class="form-select"></select>
+                        <input id="add-style-custom" class="form-control" style="display:none;margin-top:6px;" placeholder="自定义取值" />
+                    </div>
+                    <div>
+                        <label style="font-size:12px;color:var(--text-secondary, #6e6e6e);">行业</label>
+                        <select id="add-sector" class="form-select"></select>
+                        <input id="add-sector-custom" class="form-control" style="display:none;margin-top:6px;" placeholder="自定义取值" />
+                    </div>
+                </div>
+            </div>
             <div class="btn-group" style="margin-top:8px;">
                 <button class="btn btn-primary" id="btn-add-etfs">+ 添加到标的池</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">标的分类概览</div>
+            <div id="classification-card">
+                <div class="text-muted" style="font-size:13px;">加载中...</div>
             </div>
         </div>
 
@@ -38,6 +65,7 @@ function renderUniverse(container) {
     `;
 
     loadUniverse();
+    loadDimensionOptions();
 
     document.getElementById("btn-refresh-universe").addEventListener("click", () => {
         loadUniverse();
@@ -59,6 +87,7 @@ async function loadUniverse() {
             classificationCache[r.sec_code] = r.categories || {};
         });
         document.getElementById("universe-count").textContent = items.length;
+        renderClassificationCards();
         if (!items.length) {
             area.innerHTML = `
                 <div class="empty-state">
@@ -91,6 +120,80 @@ function sortedUniverse() {
         return String(va).localeCompare(String(vb), "zh-CN", { numeric: true }) * dir;
     });
     return items;
+}
+
+const DIMENSIONS = [
+    ["asset_type", "资产类别"],
+    ["style", "风格"],
+    ["sector", "行业"],
+];
+
+async function loadDimensionOptions() {
+    let valuesByKey = {};
+    try {
+        const rules = await API.listRules(false);
+        (rules || []).forEach((r) => {
+            if (!r.is_active) return;
+            const v = r.config && r.config.category_value;
+            if (v) {
+                (valuesByKey[r.category_key] = valuesByKey[r.category_key] || new Set()).add(v);
+            }
+        });
+    } catch (e) {
+        // leave dropdowns empty; add still works without classification
+    }
+    DIMENSIONS.forEach(([key, id]) => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const values = [...(valuesByKey[key] || [])].sort((a, b) => a.localeCompare(b, "zh-CN"));
+        sel.innerHTML =
+            `<option value="">不指定</option>` +
+            values.map((v) => `<option value="${Utils.escapeHtml(v)}">${Utils.escapeHtml(v)}</option>`).join("") +
+            `<option value="__custom__">自定义…</option>`;
+
+        const custom = document.getElementById(`${id}-custom`);
+        const sync = () => {
+            if (custom) custom.style.display = sel.value === "__custom__" ? "block" : "none";
+        };
+        sel.addEventListener("change", sync);
+        sync();
+    });
+}
+
+function readDimension(selectId, customId) {
+    const sel = document.getElementById(selectId);
+    const custom = document.getElementById(customId);
+    if (sel && sel.value === "__custom__") return (custom?.value || "").trim();
+    return sel ? sel.value : "";
+}
+
+function renderClassificationCards() {
+    const card = document.getElementById("classification-card");
+    if (!card) return;
+    if (!universeCache.length) {
+        card.innerHTML = `<div class="text-muted" style="font-size:13px;">标的池为空</div>`;
+        return;
+    }
+    card.innerHTML = DIMENSIONS.map(([key, label]) => {
+        const groups = new Map();
+        let unclassified = 0;
+        universeCache.forEach((u) => {
+            const v = (classificationCache[u.sec_code] || {})[key];
+            if (v) groups.set(v, (groups.get(v) || 0) + 1);
+            else unclassified += 1;
+        });
+        const chips = [...groups.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([v, c]) => `<span class="badge badge-accent">${Utils.escapeHtml(v)} <b>${c}</b></span>`)
+            .join(" ");
+        const unc = unclassified
+            ? `<span class="badge badge-danger">未分类 ${unclassified}</span>`
+            : "";
+        return `<div style="margin-bottom:12px;">
+            <div style="font-size:12px;color:var(--text-secondary,#6e6e6e);margin-bottom:6px;">${label}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${chips || '<span class="text-muted" style="font-size:13px;">-</span>'} ${unc}</div>
+        </div>`;
+    }).join("");
 }
 
 function renderUniverseTable(items) {
@@ -238,13 +341,19 @@ async function addManualEtfs() {
         return;
     }
 
+    const classification = {};
+    DIMENSIONS.forEach(([key, id]) => {
+        const v = readDimension(id, `${id}-custom`);
+        if (v) classification[key] = v;
+    });
+
     const items = [];
     for (const line of lines) {
         const parts = line.split(/\s+/);
         const sec_code = normalizeSecCode(parts[0]);
         if (!sec_code) continue;
         const sec_name = parts.length > 1 ? parts.slice(1).join(" ") : sec_code;
-        items.push({ sec_code, sec_name, meta: {} });
+        items.push({ sec_code, sec_name, meta: {}, classification });
     }
 
     if (!items.length) {
