@@ -2,6 +2,7 @@
 
 let rulesCache = [];
 let previewCache = null;
+let nameMap = {}; // sec_code -> sec_name
 
 function renderClassification(container) {
     container.innerHTML = `
@@ -80,6 +81,8 @@ function renderClassification(container) {
 
     loadRules();
     loadConstraints();
+    // Auto-load the classification preview so the page isn't empty on entry.
+    applyClassification(true);
 
     document.getElementById("btn-refresh-rules").addEventListener("click", loadRules);
     document.getElementById("btn-apply-classification").addEventListener("click", applyClassification);
@@ -262,6 +265,17 @@ async function applyClassification(silent = false) {
         preview.innerHTML = `<div class="loading"><div class="spinner"></div>应用中...</div>`;
     }
     try {
+        // Build a sec_code -> sec_name map once, for readable member lists.
+        try {
+            const universe = await API.getUniverse();
+            nameMap = {};
+            (universe || []).forEach((u) => {
+                nameMap[u.sec_code] = u.sec_name || u.sec_code;
+            });
+        } catch (_) {
+            nameMap = {};
+        }
+
         const result = await API.applyClassification();
         previewCache = result;
         renderClassificationPreview(preview, result);
@@ -279,17 +293,49 @@ function renderClassificationPreview(el, result) {
         el.innerHTML = `<div class="empty-state"><div class="empty-icon">🏷️</div><div class="empty-title">无分类结果</div></div>`;
         return;
     }
-    const keys = new Set();
-    result.forEach((item) => Object.keys(item.categories || {}).forEach((k) => keys.add(k)));
-    const header = [...keys].map((k) => `<th>${Utils.escapeHtml(k)}</th>`).join("");
 
-    let html = `<div class="table-wrap"><table class="table"><thead><tr><th>证券代码</th>${header}</tr></thead><tbody>`;
+    // Group by (category_key, category_value) across all ETFs.
+    const groups = new Map(); // key -> Map(value -> {count, members[]})
     result.forEach((item) => {
-        const cells = [...keys]
-            .map((k) => `<td><span class="badge badge-accent">${Utils.escapeHtml(item.categories?.[k] || "-")}</span></td>`)
-            .join("");
-        html += `<tr><td class="mono">${Utils.escapeHtml(item.sec_code)}</td>${cells}</tr>`;
+        Object.entries(item.categories || {}).forEach(([key, value]) => {
+            if (!value) return;
+            if (!groups.has(key)) groups.set(key, new Map());
+            const byValue = groups.get(key);
+            if (!byValue.has(value)) {
+                byValue.set(value, { count: 0, members: [] });
+            }
+            const g = byValue.get(value);
+            g.count += 1;
+            g.members.push({
+                code: item.sec_code,
+                name: nameMap[item.sec_code] || item.sec_code,
+            });
+        });
     });
+
+    const keyOrder = [...groups.keys()];
+    const rows = [];
+    keyOrder.forEach((key) => {
+        groups.get(key).forEach((g, value) => {
+            rows.push({ key, value, count: g.count, members: g.members });
+        });
+    });
+
+    let html = `<div class="table-wrap"><table class="table" id="classification-summary-table">
+        <thead><tr><th>分类维度</th><th>分类值</th><th>标的数量</th><th>标的（名称 · 代码）</th></tr></thead><tbody>`;
+
+    rows.forEach((r) => {
+        const memberText = r.members
+            .map((m) => `${Utils.escapeHtml(m.name)} <span class="mono text-muted">${Utils.escapeHtml(m.code)}</span>`)
+            .join("、");
+        html += `<tr>
+            <td><span class="badge badge-accent">${Utils.escapeHtml(r.key)}</span></td>
+            <td><strong>${Utils.escapeHtml(r.value)}</strong></td>
+            <td><span class="badge badge-muted">${r.count}</span></td>
+            <td style="line-height:1.9;">${memberText}</td>
+        </tr>`;
+    });
+
     html += `</tbody></table></div>`;
     el.innerHTML = html;
 }

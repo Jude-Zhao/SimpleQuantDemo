@@ -17,6 +17,20 @@ from webapp.config import get_config
 from webapp.models.database import init_db
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Static files that are revalidated on every request.
+
+    Frontend assets change frequently during development; without cache
+    control the browser may serve stale JS/CSS. ``no-cache`` lets the browser
+    cache but forces a revalidation so edits show up after a plain refresh.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def create_app() -> FastAPI:
     config = get_config()
 
@@ -40,7 +54,7 @@ def create_app() -> FastAPI:
     # 静态文件
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+        app.mount("/static", NoCacheStaticFiles(directory=str(static_dir)), name="static")
 
     index_html = static_dir / "index.html"
 

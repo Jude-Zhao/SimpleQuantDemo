@@ -165,7 +165,7 @@ function renderReturnBar(el, items) {
         },
         grid: { left: 96, right: 64, top: 8, bottom: 24 },
         xAxis: { type: "value", axisLabel: { formatter: (v) => (v * 100).toFixed(0) + "%" } },
-        yAxis: { type: "category", data: ordered.map((it) => it.sec_code) },
+        yAxis: { type: "category", data: ordered.map((it) => it.sec_name || it.sec_code) },
         series: [{
             type: "bar",
             data: ordered.map((it) => ({
