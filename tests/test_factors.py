@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
-from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.factors.exceptions import FactorValidationError
 from core.factors.utils import pivot_price_field, validate_factor_panel
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_EXAMPLE = PROJECT_ROOT / "data_example"
 
 
 def _sample_price_data() -> pd.DataFrame:
@@ -34,18 +27,6 @@ def _sample_price_data() -> pd.DataFrame:
 
 def _empty_macro() -> pd.DataFrame:
     return pd.DataFrame(index=pd.date_range("2026-01-01", periods=6, freq="D"))
-
-
-def _example_paths() -> tuple[Path, Path, Path]:
-    csv_paths = sorted(
-        [path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".csv"],
-        key=lambda path: path.stat().st_size,
-    )
-    return (
-        csv_paths[-1],
-        csv_paths[0],
-        next(path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".xlsx"),
-    )
 
 
 def test_pivot_price_field_keeps_universe_order() -> None:
@@ -94,12 +75,10 @@ def test_validate_factor_panel_rejects_wrong_columns() -> None:
         validate_factor_panel({"bad_factor": factor}, ["159928.SZ"])
 
 
-def test_builtin_factors_build_on_example_data() -> None:
-    etf_path, macro_path, universe_path = _example_paths()
-    source = CsvDataSource(etf_path, macro_path, universe_path)
-    price_data, macro_data, universe = source.load_all(
-        start_date="2026-01-02",
-        end_date="2026-03-13",
+def test_builtin_factors_build_on_example_data(sqlite_source) -> None:
+    price_data, macro_data, universe = sqlite_source.load_all(
+        start_date="2024-06-03",
+        end_date="2025-12-31",
     )
 
     momentum = MomentumFactor(window=5).build(price_data, macro_data, universe)

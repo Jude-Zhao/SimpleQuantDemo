@@ -257,7 +257,7 @@ def _run_linear_factor(
     icir_data = {}
     for fname, fmat in factor_panel.items():
         ic_series = calculate_factor_ic(
-            fmat.dropna(how="all"), forward_returns, min_periods=10
+            fmat.dropna(how="all"), forward_returns, min_observations=10
         )
         icir_data[fname] = calculate_icir(ic_series, window=20, min_periods=10)
     synthesized = ICIRWeightedSynthesizer().synthesize(factor_panel, icir_data)

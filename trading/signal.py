@@ -14,7 +14,7 @@ from core.analysis import (
     calculate_icir,
 )
 from core.calendar import generate_rebalance_dates, get_trading_dates
-from core.data import CsvDataSource
+from core.data import SqliteDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.optimization import EqualWeightOptimizer
 from core.synthesis import ICIRWeightedSynthesizer
@@ -33,11 +33,7 @@ class TradingSignalResult:
 
 def generate_trading_signal(config: TradingConfig) -> TradingSignalResult:
     """Generate latest position signal from local data."""
-    data_source = CsvDataSource(
-        etf_price_path=config.etf_price_path,
-        macro_factors_path=config.macro_factors_path,
-        universe_path=config.universe_path,
-    )
+    data_source = SqliteDataSource(db_path=config.db_path)
     price_data, macro_data, universe = data_source.load_all(
         start_date=config.start_date,
         end_date=config.end_date,
@@ -66,7 +62,7 @@ def generate_trading_signal(config: TradingConfig) -> TradingSignalResult:
     )
     icir_data = {
         factor_name: calculate_icir(
-            calculate_factor_ic(factor, forward_returns, min_periods=config.ic_min_periods).loc[
+            calculate_factor_ic(factor, forward_returns, min_observations=config.ic_min_observations).loc[
                 lambda series: series.index.intersection(ic_dates)
             ],
             window=config.icir_window,
@@ -78,7 +74,7 @@ def generate_trading_signal(config: TradingConfig) -> TradingSignalResult:
         factor_panel=factor_panel,
         threshold=config.collinearity_threshold,
         mode="warn",
-        min_periods=config.ic_min_periods,
+        min_observations=config.ic_min_observations,
     )
     synthesized_scores = ICIRWeightedSynthesizer(
         half_life_periods=config.half_life_periods,

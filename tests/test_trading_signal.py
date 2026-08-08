@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -10,29 +12,15 @@ from trading.signal import generate_trading_signal
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON = Path(r"D:\Coding\APPS\Miniconda3Py38_4.9.2\envs\QuantitativeTrading\python.exe")
+PYTHON = Path(sys.executable)
 
 
-def test_generate_trading_signal_writes_position_file(tmp_path: Path) -> None:
-    config = default_trading_config(output_dir=tmp_path)
-    config = config.__class__(
-        etf_price_path=config.etf_price_path,
-        macro_factors_path=config.macro_factors_path,
-        universe_path=config.universe_path,
-        output_dir=config.output_dir,
-        start_date="2025-06-02",
+def test_generate_trading_signal_writes_position_file(tmp_path: Path, test_db_path: Path) -> None:
+    config = replace(
+        default_trading_config(output_dir=tmp_path),
+        db_path=test_db_path,
+        start_date="2024-06-03",
         end_date="2026-03-13",
-        momentum_window=config.momentum_window,
-        volatility_window=config.volatility_window,
-        forward_return_horizon=config.forward_return_horizon,
-        ic_min_periods=config.ic_min_periods,
-        icir_window=config.icir_window,
-        icir_min_periods=config.icir_min_periods,
-        half_life_periods=config.half_life_periods,
-        collinearity_threshold=config.collinearity_threshold,
-        top_n=config.top_n,
-        max_weight=config.max_weight,
-        min_weight=config.min_weight,
     )
 
     result = generate_trading_signal(config)
@@ -45,14 +33,16 @@ def test_generate_trading_signal_writes_position_file(tmp_path: Path) -> None:
     assert saved.columns.tolist() == ["sec", "weight"]
 
 
-def test_trading_cli_runs(tmp_path: Path) -> None:
+def test_trading_cli_runs(tmp_path: Path, test_db_path: Path) -> None:
     completed = subprocess.run(
         [
             str(PYTHON),
             "-m",
             "trading.main",
+            "--db-path",
+            str(test_db_path),
             "--start-date",
-            "2025-06-02",
+            "2024-06-03",
             "--end-date",
             "2026-03-13",
             "--output-dir",

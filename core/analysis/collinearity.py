@@ -38,19 +38,19 @@ class CollinearityResult:
 def calculate_factor_correlation_matrix(
     factor_panel: dict[str, pd.DataFrame],
     method: Literal["pearson", "spearman"] = "pearson",
-    min_periods: int = 3,
+    min_observations: int = 3,
 ) -> pd.DataFrame:
     """Calculate factor-to-factor correlation from flattened date/security values."""
     if not factor_panel:
         raise AnalysisError("Factor panel is empty.")
-    if min_periods <= 1:
-        raise ValueError("min_periods must be greater than 1.")
+    if min_observations <= 1:
+        raise ValueError("min_observations must be greater than 1.")
     if method not in {"pearson", "spearman"}:
         raise ValueError("method must be 'pearson' or 'spearman'.")
 
     flattened = {name: _stack_factor_values(factor) for name, factor in factor_panel.items()}
     factor_values = pd.DataFrame(flattened)
-    return factor_values.corr(method=method, min_periods=min_periods)
+    return factor_values.corr(method=method, min_periods=min_observations)
 
 
 def find_correlated_pairs(
@@ -85,7 +85,7 @@ def analyze_collinearity(
     threshold: float = 0.7,
     mode: Literal["select", "warn"] = "select",
     method: Literal["pearson", "spearman"] = "pearson",
-    min_periods: int = 3,
+    min_observations: int = 3,
 ) -> CollinearityResult:
     """Analyze factor collinearity and optionally drop redundant factors.
 
@@ -100,7 +100,7 @@ def analyze_collinearity(
     correlation_matrix = calculate_factor_correlation_matrix(
         factor_panel=factor_panel,
         method=method,
-        min_periods=min_periods,
+        min_observations=min_observations,
     )
     correlated_pairs = find_correlated_pairs(correlation_matrix, threshold=threshold)
     warnings = [pair.to_warning() for pair in correlated_pairs]

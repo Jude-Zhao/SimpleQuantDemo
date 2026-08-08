@@ -29,12 +29,12 @@ def calculate_forward_returns(
 def calculate_factor_ic(
     factor: pd.DataFrame,
     forward_returns: pd.DataFrame,
-    min_periods: int = 3,
+    min_observations: int = 3,
     method: str = "pearson",
 ) -> pd.Series:
     """Calculate cross-sectional IC between one factor and forward returns by date."""
-    if min_periods <= 1:
-        raise ValueError("min_periods must be greater than 1.")
+    if min_observations <= 1:
+        raise ValueError("min_observations must be greater than 1.")
     if method not in {"pearson", "spearman"}:
         raise ValueError("method must be 'pearson' or 'spearman'.")
 
@@ -50,7 +50,7 @@ def calculate_factor_ic(
             axis=1,
         ).dropna()
 
-        if len(pair) < min_periods:
+        if len(pair) < min_observations:
             values[date] = float("nan")
             continue
         values[date] = pair["factor"].corr(pair["forward_return"], method=method)
@@ -63,13 +63,13 @@ def calculate_factor_ic(
 def calculate_rank_ic(
     factor: pd.DataFrame,
     forward_returns: pd.DataFrame,
-    min_periods: int = 3,
+    min_observations: int = 3,
 ) -> pd.Series:
     """Calculate Spearman RankIC between one factor and forward returns by date."""
     return calculate_factor_ic(
         factor=factor,
         forward_returns=forward_returns,
-        min_periods=min_periods,
+        min_observations=min_observations,
         method="spearman",
     ).rename("rank_ic")
 
@@ -77,7 +77,7 @@ def calculate_rank_ic(
 def calculate_factor_panel_ic(
     factor_panel: Mapping[str, pd.DataFrame],
     forward_returns: pd.DataFrame,
-    min_periods: int = 3,
+    min_observations: int = 3,
     method: str = "pearson",
 ) -> dict[str, pd.Series]:
     """Calculate IC series for each factor in a factor panel."""
@@ -88,7 +88,7 @@ def calculate_factor_panel_ic(
         factor_name: calculate_factor_ic(
             factor=factor,
             forward_returns=forward_returns,
-            min_periods=min_periods,
+            min_observations=min_observations,
             method=method,
         )
         for factor_name, factor in factor_panel.items()

@@ -40,6 +40,7 @@ trading/output/
 data/raw/
 data/processed/
 data/simple_quant.db
+data/*.bak
 logs/
 .tmp_system_test/
 

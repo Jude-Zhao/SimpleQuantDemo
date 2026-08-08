@@ -59,14 +59,18 @@ def validate_universe(universe: Sequence[str]) -> None:
 
 
 def validate_price_universe_coverage(price_data: pd.DataFrame, universe: Sequence[str]) -> None:
-    """Ensure the price table and universe contain the same security set."""
+    """Ensure every universe code has price data.
+
+    The universe is a subset of the price table: the database may hold
+    price history for more ETFs than the currently active universe, so
+    extra codes in ``price_data`` are allowed. Only universe codes that
+    are missing from price data are rejected.
+    """
     price_codes = set(price_data["sec"].unique())
     universe_codes = set(universe)
     missing_in_price = sorted(universe_codes - price_codes)
-    missing_in_universe = sorted(price_codes - universe_codes)
-    if missing_in_price or missing_in_universe:
+    if missing_in_price:
         raise DataValidationError(
-            "Price/universe code mismatch: "
-            f"missing_in_price={missing_in_price}, missing_in_universe={missing_in_universe}"
+            f"Universe codes missing from price data: {missing_in_price}"
         )
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -17,7 +17,7 @@ from core.analysis import (
     calculate_rank_ic,
 )
 from core.calendar import generate_rebalance_dates, get_trading_dates
-from core.data import CsvDataSource
+from core.data import SqliteDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.synthesis import ICIRWeightedSynthesizer
 from research.backtest import BacktestResult, run_backtest
@@ -39,11 +39,7 @@ class ResearchRunResult:
 
 def run_research(config: ResearchConfig) -> ResearchRunResult:
     """Run the built-in local-data research pipeline."""
-    data_source = CsvDataSource(
-        etf_price_path=config.etf_price_path,
-        macro_factors_path=config.macro_factors_path,
-        universe_path=config.universe_path,
-    )
+    data_source = SqliteDataSource(db_path=config.db_path)
     price_data, macro_data, universe = data_source.load_all(
         start_date=config.start_date,
         end_date=config.end_date,
@@ -76,7 +72,7 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         factor_name: calculate_factor_ic(
             factor=factor,
             forward_returns=forward_returns,
-            min_periods=config.ic_min_periods,
+            min_observations=config.ic_min_observations,
         ).loc[lambda series: series.index.intersection(ic_dates)]
         for factor_name, factor in factor_panel.items()
     }
@@ -84,7 +80,7 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         factor_name: calculate_rank_ic(
             factor=factor,
             forward_returns=forward_returns,
-            min_periods=config.ic_min_periods,
+            min_observations=config.ic_min_observations,
         ).loc[lambda series: series.index.intersection(ic_dates)]
         for factor_name, factor in factor_panel.items()
     }
@@ -102,7 +98,7 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         icir_data=icir_data,
         threshold=config.collinearity_threshold,
         mode="select",
-        min_periods=config.ic_min_periods,
+        min_observations=config.ic_min_observations,
     )
     selected_icir_data = {
         factor_name: icir_data[factor_name]
@@ -227,6 +223,7 @@ def write_research_outputs(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run SimpleQuantDemo research pipeline.")
+    parser.add_argument("--db-path", default=None, help="Path to the SQLite database.")
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--output-dir", default=None)
@@ -238,23 +235,13 @@ def main() -> None:
     config = default_research_config(
         output_dir=Path(args.output_dir) if args.output_dir else None,
     )
+    if args.db_path:
+        config = replace(config, db_path=Path(args.db_path))
     if args.start_date or args.end_date:
-        config = ResearchConfig(
-            etf_price_path=config.etf_price_path,
-            macro_factors_path=config.macro_factors_path,
-            universe_path=config.universe_path,
-            output_dir=config.output_dir,
+        config = replace(
+            config,
             start_date=args.start_date or config.start_date,
             end_date=args.end_date,
-            momentum_window=config.momentum_window,
-            volatility_window=config.volatility_window,
-            forward_return_horizon=config.forward_return_horizon,
-            ic_min_periods=config.ic_min_periods,
-            icir_window=config.icir_window,
-            icir_min_periods=config.icir_min_periods,
-            half_life_periods=config.half_life_periods,
-            collinearity_threshold=config.collinearity_threshold,
-            backtest=config.backtest,
         )
 
     result = run_research(config)

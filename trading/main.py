@@ -12,6 +12,7 @@ from trading.signal import generate_trading_signal
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate SimpleQuantDemo position signal.")
+    parser.add_argument("--db-path", default=None, help="Path to the SQLite database.")
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--output-dir", default=None)
@@ -23,6 +24,8 @@ def main() -> None:
     config = default_trading_config(
         output_dir=Path(args.output_dir) if args.output_dir else None,
     )
+    if args.db_path:
+        config = replace(config, db_path=Path(args.db_path))
     config = replace(
         config,
         start_date=args.start_date or config.start_date,

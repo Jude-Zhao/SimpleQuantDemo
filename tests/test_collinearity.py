@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
@@ -11,12 +9,7 @@ from core.analysis import (
     find_correlated_pairs,
 )
 from core.analysis.exceptions import AnalysisError
-from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_EXAMPLE = PROJECT_ROOT / "data_example"
 
 
 def _factor_panel() -> dict[str, pd.DataFrame]:
@@ -60,20 +53,8 @@ def _icir_data() -> dict[str, pd.Series]:
     }
 
 
-def _example_paths() -> tuple[Path, Path, Path]:
-    csv_paths = sorted(
-        [path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".csv"],
-        key=lambda path: path.stat().st_size,
-    )
-    return (
-        csv_paths[-1],
-        csv_paths[0],
-        next(path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".xlsx"),
-    )
-
-
 def test_calculate_factor_correlation_matrix() -> None:
-    corr = calculate_factor_correlation_matrix(_factor_panel(), min_periods=3)
+    corr = calculate_factor_correlation_matrix(_factor_panel(), min_observations=3)
 
     assert corr.loc["base", "same"] == pytest.approx(1.0)
     assert corr.loc["base", "inverse"] == pytest.approx(-1.0)
@@ -81,7 +62,7 @@ def test_calculate_factor_correlation_matrix() -> None:
 
 
 def test_find_correlated_pairs_uses_absolute_correlation() -> None:
-    corr = calculate_factor_correlation_matrix(_factor_panel(), min_periods=3)
+    corr = calculate_factor_correlation_matrix(_factor_panel(), min_observations=3)
     pairs = find_correlated_pairs(corr, threshold=0.9)
     pair_keys = {(pair.factor_a, pair.factor_b) for pair in pairs}
 
@@ -126,7 +107,7 @@ def test_analyze_collinearity_keeps_all_when_no_pairs() -> None:
         icir_data=_icir_data(),
         threshold=0.9,
         mode="select",
-        min_periods=999,
+        min_observations=999,
     )
 
     assert list(result.selected_factor_panel) == list(_factor_panel())
@@ -134,12 +115,10 @@ def test_analyze_collinearity_keeps_all_when_no_pairs() -> None:
     assert result.correlated_pairs == []
 
 
-def test_collinearity_pipeline_with_example_factors() -> None:
-    etf_path, macro_path, universe_path = _example_paths()
-    source = CsvDataSource(etf_path, macro_path, universe_path)
-    price_data, macro_data, universe = source.load_all(
-        start_date="2025-10-08",
-        end_date="2026-03-13",
+def test_collinearity_pipeline_with_example_factors(sqlite_source) -> None:
+    price_data, macro_data, universe = sqlite_source.load_all(
+        start_date="2024-06-03",
+        end_date="2025-12-31",
     )
     momentum = MomentumFactor(window=5).build(price_data, macro_data, universe)
     volatility = VolatilityFactor(window=20).build(price_data, macro_data, universe)
@@ -148,7 +127,7 @@ def test_collinearity_pipeline_with_example_factors() -> None:
         {"momentum_5": momentum, "volatility_20": volatility},
         threshold=0.7,
         mode="warn",
-        min_periods=10,
+        min_observations=10,
     )
 
     assert result.correlation_matrix.shape == (2, 2)

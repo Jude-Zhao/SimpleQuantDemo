@@ -1,31 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
 from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
-from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.synthesis import ICIRWeightedSynthesizer
 from research.backtest import BacktestConfig, run_backtest
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_EXAMPLE = PROJECT_ROOT / "data_example"
-
-
-def _example_paths() -> tuple[Path, Path, Path]:
-    csv_paths = sorted(
-        [path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".csv"],
-        key=lambda path: path.stat().st_size,
-    )
-    return (
-        csv_paths[-1],
-        csv_paths[0],
-        next(path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".xlsx"),
-    )
 
 
 def test_run_backtest_minimal_deterministic_case() -> None:
@@ -132,12 +113,10 @@ def test_run_backtest_clears_sold_positions_on_rebalance() -> None:
     assert result.weights.loc[pd.Timestamp("2026-01-12"), "B.SH"] == pytest.approx(1.0)
 
 
-def test_run_backtest_with_example_pipeline() -> None:
-    etf_path, macro_path, universe_path = _example_paths()
-    source = CsvDataSource(etf_path, macro_path, universe_path)
-    price_data, macro_data, universe = source.load_all(
-        start_date="2025-06-02",
-        end_date="2026-03-13",
+def test_run_backtest_with_example_pipeline(sqlite_source) -> None:
+    price_data, macro_data, universe = sqlite_source.load_all(
+        start_date="2024-06-03",
+        end_date="2025-12-31",
     )
     factor_panel = {
         "momentum_5": MomentumFactor(window=5).build(price_data, macro_data, universe),
@@ -146,7 +125,7 @@ def test_run_backtest_with_example_pipeline() -> None:
     forward_returns = calculate_forward_returns(price_data, horizon=5, universe=universe)
     icir_data = {
         factor_name: calculate_icir(
-            calculate_factor_ic(factor, forward_returns, min_periods=10),
+            calculate_factor_ic(factor, forward_returns, min_observations=10),
             window=20,
             min_periods=10,
         )

@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 
 from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
-from core.data import CsvDataSource
 from core.factors import MomentumFactor, VolatilityFactor
 from core.synthesis import ICIRWeightedSynthesizer, calculate_decayed_icir_score
 from core.synthesis.exceptions import SynthesisError
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_EXAMPLE = PROJECT_ROOT / "data_example"
 
 
 def _factor_panel() -> dict[str, pd.DataFrame]:
@@ -32,18 +25,6 @@ def _icir_data() -> dict[str, pd.Series]:
         "factor_a": pd.Series([1.0, 1.0, 1.0], index=dates),
         "factor_b": pd.Series([3.0, 3.0, 3.0], index=dates),
     }
-
-
-def _example_paths() -> tuple[Path, Path, Path]:
-    csv_paths = sorted(
-        [path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".csv"],
-        key=lambda path: path.stat().st_size,
-    )
-    return (
-        csv_paths[-1],
-        csv_paths[0],
-        next(path for path in DATA_EXAMPLE.iterdir() if path.suffix.lower() == ".xlsx"),
-    )
 
 
 def test_calculate_decayed_icir_score_uses_half_life_weights() -> None:
@@ -124,12 +105,10 @@ def test_icir_weighted_synthesizer_requires_icir_for_each_factor() -> None:
         )
 
 
-def test_synthesis_pipeline_with_example_data() -> None:
-    etf_path, macro_path, universe_path = _example_paths()
-    source = CsvDataSource(etf_path, macro_path, universe_path)
-    price_data, macro_data, universe = source.load_all(
-        start_date="2025-06-02",
-        end_date="2026-03-13",
+def test_synthesis_pipeline_with_example_data(sqlite_source) -> None:
+    price_data, macro_data, universe = sqlite_source.load_all(
+        start_date="2024-06-03",
+        end_date="2025-12-31",
     )
 
     factor_panel = {
@@ -139,7 +118,7 @@ def test_synthesis_pipeline_with_example_data() -> None:
     forward_returns = calculate_forward_returns(price_data, horizon=5, universe=universe)
     icir_data = {
         factor_name: calculate_icir(
-            calculate_factor_ic(factor, forward_returns, min_periods=10),
+            calculate_factor_ic(factor, forward_returns, min_observations=10),
             window=20,
             min_periods=10,
         )
