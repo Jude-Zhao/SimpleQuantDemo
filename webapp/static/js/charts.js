@@ -98,25 +98,47 @@ const Charts = (() => {
     function render(el, factory) {
         if (!el) return null;
         const existing = registry.get(el);
-        if (existing?.chart) {
-            existing.chart.dispose();
+
+        function currentOption() {
+            return baseOption(typeof factory === "function" ? factory(themeName()) : factory);
+        }
+        function attachResize(chart) {
+            if ("ResizeObserver" in window) {
+                const ro = new ResizeObserver(() => chart?.resize());
+                ro.observe(el);
+                return ro;
+            }
+            window.addEventListener("resize", () => chart?.resize());
+            return null;
         }
 
-        let intersection = null;
-        let chart = null;
-
-        function build() {
-            const opt = typeof factory === "function" ? factory(themeName()) : factory;
-            chart = echarts.init(el);
-            chart.setOption(baseOption(opt));
+        // Re-render of an existing chart: rebuild synchronously. The lazy
+        // IntersectionObserver path is only useful for first paint; a second
+        // render of the same container must not wait on its async callback,
+        // otherwise a refreshed chart stays blank (e.g. after switching the
+        // returns-ranking window).
+        if (existing) {
+            existing.chart?.dispose();
+            existing.intersection?.disconnect();
+            existing.resizeObserver?.disconnect();
+            const chart = echarts.init(el);
+            chart.setOption(currentOption());
+            const resizeObserver = attachResize(chart);
+            registry.set(el, { factory, chart, intersection: null, resizeObserver, el });
             return chart;
         }
 
-        function destroy() {
-            if (chart) {
-                chart.dispose();
-                chart = null;
-            }
+        // First render: lazy init only when the container scrolls into view.
+        let intersection = null;
+        let chart = null;
+        let resizeObserver = null;
+
+        function build() {
+            chart = echarts.init(el);
+            chart.setOption(currentOption());
+            resizeObserver = attachResize(chart);
+            registry.set(el, { factory, chart, intersection, resizeObserver, el });
+            return chart;
         }
 
         // Lazy init: only create the chart when the container is visible
@@ -132,15 +154,6 @@ const Charts = (() => {
             intersection.observe(el);
         } else {
             build();
-        }
-
-        // Responsive resize
-        let resizeObserver = null;
-        if ("ResizeObserver" in window) {
-            resizeObserver = new ResizeObserver(() => chart?.resize());
-            resizeObserver.observe(el);
-        } else {
-            window.addEventListener("resize", () => chart?.resize());
         }
 
         registry.set(el, { factory, chart, intersection, resizeObserver, el });

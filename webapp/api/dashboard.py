@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -15,6 +17,13 @@ from webapp.services.universe_service import list_active_universe
 from webapp.services.strategy_service import DEFAULT_END, DEFAULT_START
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+# FactorRanking cache: keyed by (universe, latest bar date) so it is
+# invalidated as soon as new market data arrives. Guarded by a lock because
+# concurrent requests may otherwise recompute the (expensive) RankIC in
+# parallel and starve other endpoints.
+_ranking_cache: dict[tuple[tuple[str, ...], str], list[FactorRankingItem]] = {}
+_ranking_cache_lock = threading.Lock()
 
 
 class DashboardStats(BaseModel):
@@ -113,6 +122,10 @@ def get_factor_ranking(db: Session = Depends(get_db)):
     """Compute RankIC mean/IR for recent factors for ranking display.
 
     Uses a lightweight computation from the first available date range.
+    The RankIC computation is expensive (it re-derives each factor and its
+    IC series on every call), so results are cached keyed by the universe and
+    the latest bar date. The cache is invalidated automatically whenever new
+    market data is synced.
     """
     etfs = get_etf_list(db)
     universe = [e["sec_code"] for e in etfs]
@@ -122,6 +135,15 @@ def get_factor_ranking(db: Session = Depends(get_db)):
     price_data = get_etf_price(db, universe, DEFAULT_START, DEFAULT_END)
     if price_data.empty:
         return []
+
+    key = (
+        tuple(sorted(universe)),
+        str(pd.to_datetime(price_data["date"]).max()),
+    )
+    with _ranking_cache_lock:
+        cached = _ranking_cache.get(key)
+    if cached is not None:
+        return cached
 
     from webapp.services.factor_service import compute_factor
 
@@ -145,6 +167,9 @@ def get_factor_ranking(db: Session = Depends(get_db)):
         except Exception:
             # Skip factors that fail on the default data range.
             continue
+
+    with _ranking_cache_lock:
+        _ranking_cache[key] = ranking
     return ranking
 
 
