@@ -14,16 +14,17 @@ from core.factors.utils import pivot_price_field, validate_factor_matrix
 class VolatilityFactor(FactorBuilder):
     """N-day annualized volatility factor based on close-to-close returns.
 
-    Measures the price fluctuation over the past N trading days.
-    Higher volatility indicates higher risk.
+    Measures the price fluctuation over the past N trading days. The output is
+    negated so that higher values are better (low volatility  ->  high score),
+    matching the convention that all factors are "larger is better" upstream.
     """
 
     registry_name = "volatility"
     display_name = "波动率因子"
     category = "波动率"
-    description = "过去N个交易日的收盘价收益率年化标准差，衡量价格波动风险"
-    formula = "VOL(t) = std(returns(t-N+1..t)) * sqrt(annualization)"
-    direction = "negative"
+    description = "过去N个交易日的收盘价收益率年化标准差（取反：低波动得高分）"
+    formula = "VOL(t) = -std(returns(t-N+1..t)) * sqrt(annualization)"
+    direction = "positive"
     params_schema = {
         "window": {
             "type": "int",
@@ -63,7 +64,7 @@ class VolatilityFactor(FactorBuilder):
     ) -> pd.DataFrame:
         close = pivot_price_field(price_data, field="close", universe=universe)
         returns = close.pct_change(fill_method=None)
-        factor = returns.rolling(window=self.window, min_periods=self.window).std() * np.sqrt(self.annualization)
+        factor = -returns.rolling(window=self.window, min_periods=self.window).std() * np.sqrt(self.annualization)
         factor.index.name = "date"
         validate_factor_matrix(factor, universe, name=self.name)
         return factor

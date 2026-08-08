@@ -59,7 +59,7 @@ def test_volatility_factor_formula() -> None:
         ["510300.SH", "159928.SZ"],
     )
     close = pivot_price_field(price_data, universe=["510300.SH", "159928.SZ"])
-    expected = close.pct_change(fill_method=None).rolling(3, min_periods=3).std() * np.sqrt(252)
+    expected = -close.pct_change(fill_method=None).rolling(3, min_periods=3).std() * np.sqrt(252)
 
     pd.testing.assert_frame_equal(factor, expected)
 

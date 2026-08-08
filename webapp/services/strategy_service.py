@@ -18,22 +18,15 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from core.analysis.ic import (
-    calculate_factor_ic,
-    calculate_forward_returns,
-    calculate_icir,
-)
-from core.factors.registry import get_factor_registry
+from core.factors.config import categories_to_dict, list_factor_categories
 from core.optimization import (
-    BLOptimizer,
-    MVOptimizer,
-    OptimizationConstraints,
-    View,
+    CategoryConstraint as CoreCategoryConstraint,
+    OptimizationConstraints as CoreOptimizationConstraints,
     validate_constraints,
 )
-from core.synthesis import ICIRWeightedSynthesizer
 from research.backtest import BacktestConfig, BacktestResult, run_backtest
 from webapp.config import get_config
+from webapp.models.constraint_config import ConstraintConfig
 from webapp.models.strategy_run import StrategyRun
 from webapp.schemas.strategy import (
     ConstraintViolationItem,
@@ -45,51 +38,64 @@ from webapp.schemas.strategy import (
 )
 from webapp.services.classification_service import classify_universe
 from webapp.services.data_service import get_etf_price
+from webapp.services.eaa_faa import build_category_scores, eaa_composite, faa_composite
 from webapp.services.universe_service import get_universe_codes, seed_default_universe
 
 # Default date range for backtests when no explicit range is provided.
 DEFAULT_START = "2024-01-01"
 DEFAULT_END = "2026-12-31"
 
-_STRATEGY_METAS: list[StrategyMeta] = [
-    StrategyMeta(
-        name="linear_factor",
-        display_name="线性因子策略",
-        description="基于多个因子的合成评分，选取 Top N 等权配置，按周期调仓。",
-        params_schema=[
-            StrategyParamSchema(name="factors", type="multi_factor", default=[], label="因子列表"),
-            StrategyParamSchema(name="top_n", type="int", default=5, min=1, max=20, label="持仓数量"),
-            StrategyParamSchema(name="rebalance_freq", type="str", default="weekly", label="调仓频率", options=["weekly", "monthly"]),
-            StrategyParamSchema(name="max_weight", type="float", default=0.5, min=0.1, max=1.0, label="单票最大权重"),
-            StrategyParamSchema(name="min_weight", type="float", default=0.0, min=0.0, max=0.3, label="单票最小权重"),
-            StrategyParamSchema(name="horizon", type="int", default=5, min=1, max=20, label="调仓窗口(交易日)"),
-        ],
-    ),
-    StrategyMeta(
-        name="mvo",
-        display_name="均值方差优化",
-        description="基于历史收益与协方差矩阵的均值方差组合优化。",
-        params_schema=[
-            StrategyParamSchema(name="objective", type="str", default="max_sharpe", label="优化目标", options=["min_variance", "max_sharpe", "target_return"]),
-            StrategyParamSchema(name="max_weight", type="float", default=0.5, min=0.1, max=1.0, label="单票最大权重"),
-            StrategyParamSchema(name="min_weight", type="float", default=0.0, min=0.0, max=0.3, label="单票最小权重"),
-            StrategyParamSchema(name="lookback", type="int", default=120, min=30, max=500, label="协方差回看窗口"),
-            StrategyParamSchema(name="target_return", type="float", default=None, label="目标收益"),
-        ],
-    ),
-    StrategyMeta(
-        name="bl",
-        display_name="Black-Litterman",
-        description="结合市场均衡先验与投资者观点的 Black-Litterman 组合优化。",
-        params_schema=[
-            StrategyParamSchema(name="max_weight", type="float", default=0.5, min=0.1, max=1.0, label="单票最大权重"),
-            StrategyParamSchema(name="min_weight", type="float", default=0.0, min=0.0, max=0.3, label="单票最小权重"),
-            StrategyParamSchema(name="tau", type="float", default=0.05, min=0.01, max=0.2, label="先验不确定性"),
-            StrategyParamSchema(name="objective", type="str", default="max_sharpe", label="优化目标"),
-            StrategyParamSchema(name="views", type="json", default=[], label="观点列表"),
-        ],
-    ),
-]
+_TOP_N_OPTIONS = [3, 5, 7, 9]
+
+
+def _build_meta() -> list[StrategyMeta]:
+    """Build strategy metadata from the factor category configuration.
+
+    The category sliders (weights / exponents) are populated from the
+    ``factors.yaml`` category list so the UI stays in sync with the config.
+    """
+    cats = categories_to_dict(include_empty=True)
+    non_empty = [c for c in cats if not c["is_empty"]]
+    empty_keys = [c["key"] for c in cats if c["is_empty"]]
+
+    default_weights = {c["key"]: 1.0 / len(non_empty) for c in non_empty}
+    default_exponents = {c["key"]: 1.0 for c in non_empty}
+
+    # Preserve forward order for the slider rendering.
+    slider_options = [{"key": c["key"], "display_name": c["display_name"]} for c in cats]
+
+    return [
+        StrategyMeta(
+            name="faa",
+            display_name="FAA 策略",
+            description=(
+                "因子分类等权合成类得分，类间按用户配置权重线性加权，"
+                "选 Top N 后组内等权配置。"
+            ),
+            params_schema=[
+                StrategyParamSchema(name="top_n", type="int", default=5, min=3, max=9, step=2, label="持仓数量 (Top N)"),
+                StrategyParamSchema(name="rebalance_freq", type="str", default="monthly", label="调仓频率", options=["weekly", "monthly"]),
+                StrategyParamSchema(name="class_weights", type="category_weights", default=default_weights, label="因子类权重", options=slider_options),
+            ],
+        ),
+        StrategyMeta(
+            name="eaa",
+            display_name="EAA 策略",
+            description=(
+                "因子分类等权合成类得分，类得分各自乘方缩放系数 α 后连乘，"
+                "整体再乘方 β，得到标准化得分，选 Top N 后按得分占比加权配置。"
+            ),
+            params_schema=[
+                StrategyParamSchema(name="top_n", type="int", default=5, min=3, max=9, step=2, label="持仓数量 (Top N)"),
+                StrategyParamSchema(name="rebalance_freq", type="str", default="monthly", label="调仓频率", options=["weekly", "monthly"]),
+                StrategyParamSchema(name="exponents", type="category_exponents", default=default_exponents, label="类缩放系数 α", options=slider_options),
+                StrategyParamSchema(name="beta", type="float", default=1.0, min=0.1, max=5.0, step=0.1, label="整体缩放系数 β"),
+            ],
+        ),
+    ]
+
+
+_STRATEGY_METAS: list[StrategyMeta] = _build_meta()
 
 
 def list_strategies() -> list[StrategyMeta]:
@@ -103,6 +109,31 @@ def get_strategy_meta(strategy_type: str) -> StrategyMeta | None:
         if meta.name == strategy_type:
             return meta
     return None
+
+
+def _load_core_constraints(db: Session) -> CoreOptimizationConstraints:
+    """Load persisted constraints and convert to the core representation."""
+    row = db.query(ConstraintConfig).order_by(ConstraintConfig.id).first()
+    if row is None or not row.config:
+        return CoreOptimizationConstraints()
+    data = row.config
+    cat_constraints = [
+        CoreCategoryConstraint(
+            category_key=c["category_key"],
+            category_value=c["category_value"],
+            min_weight=c.get("min_weight"),
+            max_weight=c.get("max_weight"),
+            min_count=c.get("min_count"),
+            max_count=c.get("max_count"),
+        )
+        for c in (data.get("category_constraints") or [])
+    ]
+    return CoreOptimizationConstraints(
+        single_min_weight=data.get("single_min_weight"),
+        single_max_weight=data.get("single_max_weight"),
+        category_constraints=cat_constraints,
+        turnover_limit=data.get("turnover_limit"),
+    )
 
 
 # ── Run orchestration ──────────────────────────────────────────────────
@@ -179,19 +210,16 @@ def run_strategy(
 
         # Build classifications from active rules
         classifications = _build_classifications(db)
+        constraints = _load_core_constraints(db)
 
         # Solve the strategy
-        if strategy_type == "linear_factor":
-            result, violations = _run_linear_factor(
-                params, price_data, universe_codes, classifications
+        if strategy_type == "faa":
+            result, violations = _run_faa(
+                params, price_data, universe_codes, classifications, constraints
             )
-        elif strategy_type == "mvo":
-            result, violations = _run_mvo(
-                params, price_data, universe_codes, classifications
-            )
-        else:  # bl
-            result, violations = _run_bl(
-                params, price_data, universe_codes, classifications
+        else:  # eaa
+            result, violations = _run_eaa(
+                params, price_data, universe_codes, classifications, constraints
             )
 
         # Persist success
@@ -227,48 +255,21 @@ def _build_classifications(db: Session) -> dict[str, dict[str, str]]:
 
 # ── Strategy implementations ───────────────────────────────────────────
 
-def _run_linear_factor(
+def _run_faa(
     params: dict[str, Any],
     price_data: pd.DataFrame,
     universe: list[str],
     classifications: dict[str, dict[str, str]],
+    constraints: CoreOptimizationConstraints,
 ) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
-    """Linear-factor strategy: synthesize factor scores, select Top-N, backtest."""
-    factor_names = params.get("factors") or ["momentum", "volatility", "reversal"]
+    """FAA strategy: weighted sum of normalized category scores, Top-N equal weight."""
     top_n = int(params.get("top_n", 5))
-    max_weight = float(params.get("max_weight", 0.5))
-    min_weight = float(params.get("min_weight", 0.0))
-    horizon = int(params.get("horizon", 5))
-    rebalance_freq = params.get("rebalance_freq", "weekly")
+    rebalance_freq = params.get("rebalance_freq", "monthly")
+    class_weights = params.get("class_weights", {}) or {}
 
-    # Build factor panel
-    factor_panel: dict[str, pd.DataFrame] = {}
-    registry = get_factor_registry()
-    for name in factor_names:
-        cls = registry.get(name)
-        if cls is None:
-            raise ValueError(f"因子不存在: {name}")
-        factor_panel[name] = cls().build(price_data, pd.DataFrame(), universe)
-
-    # ICIR-weighted synthesis
-    forward_returns = calculate_forward_returns(
-        price_data, horizon=horizon, universe=universe
-    )
-    icir_data = {}
-    for fname, fmat in factor_panel.items():
-        ic_series = calculate_factor_ic(
-            fmat.dropna(how="all"), forward_returns, min_observations=10
-        )
-        icir_data[fname] = calculate_icir(ic_series, window=20, min_periods=10)
-    synthesized = ICIRWeightedSynthesizer().synthesize(factor_panel, icir_data)
-    composite = synthesized.dropna(how="all")
-
-    # Category count constraints from classifications (min_count/max_count
-    # are inferred by membership; here we only wire the declared bounds).
-    constraints = OptimizationConstraints(
-        single_min_weight=min_weight,
-        single_max_weight=max_weight,
-    )
+    categories = list_factor_categories()
+    category_scores = build_category_scores(price_data, universe, categories)
+    composite = faa_composite(category_scores, class_weights)
 
     run_result = run_backtest(
         price_data=price_data,
@@ -276,8 +277,46 @@ def _run_linear_factor(
         config=BacktestConfig(
             rebalance_freq=rebalance_freq,
             top_n=top_n,
-            max_weight=max_weight,
-            min_weight=min_weight,
+            max_weight=1.0,
+            min_weight=0.0,
+            weight_mode="equal",
+        ),
+    )
+
+    violations = _validate_portfolio(
+        run_result.weights.iloc[-1],
+        classifications,
+        constraints,
+    )
+    return run_result, violations
+
+
+def _run_eaa(
+    params: dict[str, Any],
+    price_data: pd.DataFrame,
+    universe: list[str],
+    classifications: dict[str, dict[str, str]],
+    constraints: CoreOptimizationConstraints,
+) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
+    """EAA strategy: power-product of normalized category scores, score-weighted Top-N."""
+    top_n = int(params.get("top_n", 5))
+    rebalance_freq = params.get("rebalance_freq", "monthly")
+    exponents = params.get("exponents", {}) or {}
+    beta = float(params.get("beta", 1.0))
+
+    categories = list_factor_categories()
+    category_scores = build_category_scores(price_data, universe, categories)
+    composite = eaa_composite(category_scores, exponents, beta)
+
+    run_result = run_backtest(
+        price_data=price_data,
+        factor_scores=composite,
+        config=BacktestConfig(
+            rebalance_freq=rebalance_freq,
+            top_n=top_n,
+            max_weight=1.0,
+            min_weight=0.0,
+            weight_mode="score",
         ),
     )
 
@@ -292,7 +331,7 @@ def _run_linear_factor(
 def _validate_portfolio(
     weights: pd.Series,
     classifications: dict[str, dict[str, str]],
-    constraints: OptimizationConstraints,
+    constraints: CoreOptimizationConstraints,
 ) -> list[ConstraintViolationItem]:
     violations = validate_constraints(
         weights.to_dict(),
@@ -307,149 +346,6 @@ def _validate_portfolio(
         )
         for v in violations
     ]
-
-
-def _run_mvo(
-    params: dict[str, Any],
-    price_data: pd.DataFrame,
-    universe: list[str],
-    classifications: dict[str, dict[str, str]],
-) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
-    """MVO strategy: estimate returns/cov, solve MVO, backtest."""
-    objective = params.get("objective", "max_sharpe")
-    max_weight = float(params.get("max_weight", 0.5))
-    min_weight = float(params.get("min_weight", 0.0))
-    target_return = params.get("target_return")
-
-    close = price_data.pivot_table(index="date", columns="sec", values="close")
-    close = close[universe].sort_index()
-    returns = close.pct_change(fill_method=None).dropna()
-
-    # Estimate annualized expected returns and covariance.
-    exp_ret = returns.mean() * 252
-    cov = returns.cov() * 252
-
-    constraints = OptimizationConstraints(
-        single_min_weight=min_weight,
-        single_max_weight=max_weight,
-    )
-
-    optimizer = MVOptimizer(
-        objective=objective,
-        max_weight=max_weight,
-        min_weight=min_weight,
-        target_return=target_return,
-        constraints=constraints,
-    )
-
-    weights = optimizer.optimize(
-        expected_returns=exp_ret,
-        cov_matrix=cov,
-        classifications=classifications,
-    )
-
-    # Hold the single-period MVO target for the backtest window.
-    score_matrix = pd.DataFrame(
-        weights.values[np.newaxis, :].repeat(len(close.index), axis=0),
-        index=close.index,
-        columns=close.columns,
-    )
-
-    run_result = run_backtest(
-        price_data=price_data,
-        factor_scores=score_matrix,
-        config=BacktestConfig(
-            rebalance_freq="monthly",
-            top_n=len(universe),
-            max_weight=max_weight,
-            min_weight=min_weight,
-        ),
-    )
-    violations = _validate_portfolio(weights, classifications, constraints)
-    return run_result, violations
-
-
-def _run_bl(
-    params: dict[str, Any],
-    price_data: pd.DataFrame,
-    universe: list[str],
-    classifications: dict[str, dict[str, str]],
-) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
-    """BL strategy: BL posterior estimates -> MVO -> backtest."""
-    max_weight = float(params.get("max_weight", 0.5))
-    min_weight = float(params.get("min_weight", 0.0))
-    tau = float(params.get("tau", 0.05))
-    objective = params.get("objective", "max_sharpe")
-    raw_views = params.get("views", []) or []
-
-    close = price_data.pivot_table(index="date", columns="sec", values="close")
-    close = close[universe].sort_index()
-    returns = close.pct_change(fill_method=None).dropna()
-
-    exp_ret = returns.mean() * 252
-    cov = returns.cov() * 252
-
-    # Proxy market caps: use total traded amount as a stand-in if available.
-    if "amount" in price_data.columns:
-        caps = (
-            price_data.groupby("sec")["amount"]
-            .sum()
-            .reindex(universe)
-            .fillna(1.0)
-            .astype(float)
-        )
-    else:
-        caps = pd.Series(1.0, index=universe)
-
-    # Build View objects
-    views: list[View] = []
-    for v in raw_views:
-        views.append(
-            View(
-                assets=[
-                    (a["sec"], float(a.get("weight", 1.0)))
-                    for a in v.get("assets", [])
-                ],
-                q=float(v.get("q", 0.0)),
-                confidence=float(v.get("confidence", 1.0)),
-            )
-        )
-
-    constraints = OptimizationConstraints(
-        single_min_weight=min_weight,
-        single_max_weight=max_weight,
-    )
-
-    bl_opt = BLOptimizer(
-        market_caps=caps,
-        cov_matrix=cov,
-        views=views if views else None,
-        tau=tau,
-        objective=objective,
-        max_weight=max_weight,
-        min_weight=min_weight,
-        constraints=constraints,
-    )
-    weights = bl_opt.optimize(classifications=classifications)
-
-    score_matrix = pd.DataFrame(
-        weights.values[np.newaxis, :].repeat(len(close.index), axis=0),
-        index=close.index,
-        columns=close.columns,
-    )
-
-    run_result = run_backtest(
-        price_data=price_data,
-        factor_scores=score_matrix,
-        config=BacktestConfig(
-            rebalance_freq="monthly",
-            top_n=len(universe),
-            max_weight=max_weight,
-            min_weight=min_weight,
-        ),
-    )
-    violations = _validate_portfolio(weights, classifications, constraints)
-    return run_result, violations
 
 
 # ── Result conversion ─────────────────────────────────────────────────

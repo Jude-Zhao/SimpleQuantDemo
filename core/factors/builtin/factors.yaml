@@ -1,0 +1,42 @@
+# 因子分类配置
+#
+# 定义 EAA / FAA 策略使用的因子类别及其内部因子实例列表。
+# 每个类别可包含一个或多个因子实例；同一类别内部的因子等权合成类得分，
+# 类别之间由用户在策略参数中配置权重。
+#
+# - name: 因子在 registry 中的注册名（见 core/factors/registry.py）
+# - params: 因子构造参数（对应各因子的 params_schema）
+#
+# 空类别（factors: []）正常展示，但不参与得分合成。
+# 新增因子只需在此登记，无需修改策略代码。
+
+categories:
+  momentum:
+    display_name: "动量"
+    factors:
+      - name: momentum
+        params: { window: 20 }
+      - name: momentum
+        params: { window: 60 }
+      - name: momentum
+        params: { window: 120 }
+  volatility:
+    display_name: "波动"
+    factors:
+      - name: volatility
+        params: { window: 20 }
+      - name: volatility
+        params: { window: 60 }
+  reversal:
+    display_name: "反转"
+    factors:
+      - name: reversal
+        params: { window: 5 }
+      - name: reversal
+        params: { window: 20 }
+  volume:
+    display_name: "量能"
+    factors: []
+  other:
+    display_name: "其他"
+    factors: []

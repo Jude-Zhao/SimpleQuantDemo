@@ -210,6 +210,24 @@ async function renderParamForm(strategyName) {
                         <option value="false" ${p.default === false ? "selected" : ""}>否</option>
                     </select>
                 </div>`;
+        } else if (p.type === "category_weights" || p.type === "category_exponents") {
+            const isWeights = p.type === "category_weights";
+            const max = isWeights ? 1 : 5;
+            const step = isWeights ? 0.05 : 0.1;
+            const def = p.default || {};
+            html += `
+                <div class="form-group" style="grid-column: 1 / -1;">
+                    <label>${Utils.escapeHtml(p.label)}</label>
+                    <div id="param-${p.name}">
+                        ${(p.options || []).map((c) => `
+                            <div class="slider-row">
+                                <span style="width:64px;font-size:12px;color:var(--text-secondary,#6e6e6e);">${Utils.escapeHtml(c.display_name)}</span>
+                                <input type="range" class="slider" data-cat="${Utils.escapeHtml(c.key)}"
+                                    min="${isWeights ? 0 : 0.1}" max="${max}" step="${step}" value="${def[c.key] ?? (isWeights ? 0 : 1)}" />
+                                <span class="slider-value" data-val="${Utils.escapeHtml(c.key)}">${(def[c.key] ?? (isWeights ? 0 : 1)).toFixed(2)}</span>
+                            </div>`).join("")}
+                    </div>
+                </div>`;
         } else {
             const numeric = p.type === "int" || p.type === "float";
             const hasRange = p.min !== null && p.min !== undefined && p.max !== null && p.max !== undefined;
@@ -254,6 +272,20 @@ async function renderParamForm(strategyName) {
             range.addEventListener("input", sync);
             sync();
         }
+    });
+
+    // Wire up category sliders (weights / exponents)
+    meta.params_schema.forEach((p) => {
+        if (p.type !== "category_weights" && p.type !== "category_exponents") return;
+        const box = document.getElementById(`param-${p.name}`);
+        if (!box) return;
+        box.querySelectorAll("input[type=range]").forEach((r) => {
+            const lbl = box.querySelector(`[data-val="${r.dataset.cat}"]`);
+            const sync = () => {
+                if (lbl) lbl.textContent = Number(r.value).toFixed(2);
+            };
+            r.addEventListener("input", sync);
+        });
     });
 
     if (meta.params_schema.some((p) => p.type === "multi_factor")) {
@@ -329,6 +361,13 @@ async function runStrategy() {
             }
         } else if (p.type === "bool") {
             params[p.name] = el?.value === "true";
+        } else if (p.type === "category_weights" || p.type === "category_exponents") {
+            const box = document.getElementById(`param-${p.name}`);
+            const obj = {};
+            (box?.querySelectorAll("input[type=range]") || []).forEach((r) => {
+                obj[r.dataset.cat] = parseFloat(r.value);
+            });
+            params[p.name] = obj;
         } else if (p.type === "int") {
             params[p.name] = parseInt(rangeEl?.value ?? el?.value, 10);
         } else if (p.type === "float") {

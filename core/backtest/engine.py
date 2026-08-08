@@ -8,7 +8,7 @@ import pandas as pd
 
 from core.calendar import generate_rebalance_dates, get_trading_dates
 from core.factors.utils import pivot_price_field
-from core.optimization import EqualWeightOptimizer
+from core.optimization import EqualWeightOptimizer, ScoreWeightedOptimizer
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class BacktestConfig:
     max_weight: float = 0.5
     min_weight: float = 0.0
     transaction_cost_bps: float = 5.0
+    weight_mode: str = "equal"  # "equal" (Top-N equal weight) | "score" (score-proportional)
 
 
 @dataclass(frozen=True)
@@ -63,11 +64,18 @@ def run_backtest(
         rebalance_day=cfg.rebalance_day,
     )
 
-    optimizer = EqualWeightOptimizer(
-        top_n=cfg.top_n,
-        max_weight=cfg.max_weight,
-        min_weight=cfg.min_weight,
-    )
+    if cfg.weight_mode == "score":
+        optimizer: EqualWeightOptimizer | ScoreWeightedOptimizer = ScoreWeightedOptimizer(
+            top_n=cfg.top_n,
+            max_weight=cfg.max_weight,
+            min_weight=cfg.min_weight,
+        )
+    else:
+        optimizer = EqualWeightOptimizer(
+            top_n=cfg.top_n,
+            max_weight=cfg.max_weight,
+            min_weight=cfg.min_weight,
+        )
     target_weights = pd.DataFrame(
         pd.NA, index=close.index, columns=close.columns, dtype="Float64"
     )

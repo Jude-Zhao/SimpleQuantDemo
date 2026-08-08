@@ -1,7 +1,6 @@
 """Portfolio optimization utilities."""
 
 from core.optimization.base import PortfolioOptimizer
-from core.optimization.bl import BlackLittermanModel, BLOptimizer, View
 from core.optimization.constraints import (
     CategoryConstraint,
     ConstraintViolation,
@@ -9,17 +8,14 @@ from core.optimization.constraints import (
     validate_constraints,
 )
 from core.optimization.equal_weight import EqualWeightOptimizer
-from core.optimization.mvo import MVOptimizer
+from core.optimization.score_weight import ScoreWeightedOptimizer
 
 __all__ = [
-    "BlackLittermanModel",
-    "BLOptimizer",
     "CategoryConstraint",
     "ConstraintViolation",
     "EqualWeightOptimizer",
-    "MVOptimizer",
     "OptimizationConstraints",
     "PortfolioOptimizer",
-    "View",
+    "ScoreWeightedOptimizer",
     "validate_constraints",
 ]

@@ -19,7 +19,7 @@ class StrategyRun(Base):
     __tablename__ = "strategy_runs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    strategy_type = Column(String, nullable=False, index=True)  # linear_factor / mvo / bl
+    strategy_type = Column(String, nullable=False, index=True)  # faa / eaa
     params = Column(JSON, default=dict)
     universe_snapshot = Column(JSON, default=list)
     start_date = Column(String, nullable=True)

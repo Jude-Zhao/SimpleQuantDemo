@@ -12,11 +12,12 @@ class StrategyParamSchema(BaseModel):
     """Schema describing a single strategy parameter."""
 
     name: str
-    type: str  # int / float / str / bool / multi_factor / json
+    type: str  # int / float / str / bool / multi_factor / json / category_weights / category_exponents
     default: Any = None
     label: str = ""
     min: float | int | None = None
     max: float | int | None = None
+    step: float | int | None = None
     options: list[Any] = Field(default_factory=list)
 
 

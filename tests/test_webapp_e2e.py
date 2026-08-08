@@ -63,13 +63,14 @@ def test_e2e_compute_factor():
 
 
 def test_e2e_run_strategy_and_view_records():
-    """4. Run linear-factor strategy, 5. view run records."""
+    """4. Run eaa strategy, 5. view run records."""
     response = client.post("/api/strategies/run", json={
-        "strategy_type": "linear_factor",
+        "strategy_type": "eaa",
         "params": {
-            "factors": ["momentum", "volatility"],
             "top_n": 3,
-            "max_weight": 0.5,
+            "rebalance_freq": "monthly",
+            "exponents": {"momentum": 1.0, "volatility": 1.0, "reversal": 1.0},
+            "beta": 1.0,
         },
     })
     assert response.status_code == 200

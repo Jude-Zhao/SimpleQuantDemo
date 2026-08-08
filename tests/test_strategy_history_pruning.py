@@ -30,7 +30,7 @@ def _insert_runs(db, count: int) -> list[int]:
     ids = []
     for i in range(count):
         run = StrategyRun(
-            strategy_type="linear_factor",
+            strategy_type="faa",
             params={},
             status="success",
         )

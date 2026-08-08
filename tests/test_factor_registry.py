@@ -86,9 +86,28 @@ def test_factor_meta_volatility():
     assert cls is not None
     assert cls.display_name == "波动率因子"
     assert cls.category == "波动率"
-    assert cls.direction == "negative"
+    assert cls.direction == "positive"  # 因子层已直接取反，低波动得高分
     assert "window" in cls.params_schema
     assert "annualization" in cls.params_schema
+
+
+def test_factor_volatility_is_negated():
+    """波动率因子输出取反：低波动标的得分更高。"""
+    cls = get_factor_class("volatility")
+    assert cls is not None
+    factor = cls(window=3)
+
+    dates = pd.date_range("2024-01-01", periods=6, freq="B")
+    # A 波动小（平稳上涨），B 波动大（剧烈震荡）
+    prices = pd.DataFrame({
+        "date": dates.repeat(2),
+        "sec": ["A", "B"] * 6,
+        "close": [100, 100, 101, 105, 102, 90, 103, 108, 104, 95, 105, 110],
+    })
+
+    result = factor.build(prices, pd.DataFrame(), ["A", "B"])
+    last = result.iloc[-1].dropna()
+    assert last["A"] > last["B"], "低波动 A 应得分更高（已取反）"
 
 
 def test_factor_formula_present():

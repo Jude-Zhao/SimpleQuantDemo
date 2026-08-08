@@ -14,11 +14,10 @@ def test_list_strategies():
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
-    assert len(data) == 3
+    assert len(data) == 2
     names = [s["name"] for s in data]
-    assert "linear_factor" in names
-    assert "mvo" in names
-    assert "bl" in names
+    assert "faa" in names
+    assert "eaa" in names
     # Each strategy should have param schema
     for s in data:
         assert "params_schema" in s
