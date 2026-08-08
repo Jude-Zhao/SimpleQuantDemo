@@ -104,22 +104,32 @@ async function loadUniverse() {
     }
 }
 
-let sortState = { key: "sec_code", dir: 1 };
+let sortState = { key: "category", dir: 1 };
 
-function sortedUniverse() {
-    const items = [...universeCache];
-    const { key, dir } = sortState;
-    const val = (it) => {
-        if (key === "category") return classificationCache[it.sec_code]?.asset_type || "";
-        if (key === "added_at") return it.added_at || "";
-        return it[key] || "";
-    };
-    items.sort((a, b) => {
-        const va = val(a);
-        const vb = val(b);
-        return String(va).localeCompare(String(vb), "zh-CN", { numeric: true }) * dir;
+// Group universe by asset_type; within each group sort by the current sort key
+// (falling back to sec_code when sorting by category itself).
+function groupedUniverse() {
+    const groups = new Map();
+    universeCache.forEach((u) => {
+        const cat = (classificationCache[u.sec_code] || {}).asset_type || "未分类";
+        if (!groups.has(cat)) groups.set(cat, []);
+        groups.get(cat).push(u);
     });
-    return items;
+    const { key, dir } = sortState;
+    const innerKey = key === "category" ? "sec_code" : key;
+    const val = (it) => {
+        if (innerKey === "added_at") return it.added_at || "";
+        return it[innerKey] || "";
+    };
+    const cmp = (a, b) => String(val(a)).localeCompare(String(val(b)), "zh-CN", { numeric: true }) * dir;
+    groups.forEach((arr) => arr.sort(cmp));
+    const names = [...groups.keys()].sort((a, b) => {
+        if (a === "未分类") return 1;
+        if (b === "未分类") return -1;
+        return a.localeCompare(b, "zh-CN") * dir;
+    });
+    // 未分类 pinned last regardless of sort direction
+    return names.map((name) => ({ name, items: groups.get(name) }));
 }
 
 const DIMENSIONS = [
@@ -198,11 +208,39 @@ function renderClassificationCards() {
 
 function renderUniverseTable(items) {
     const area = document.getElementById("universe-table-area");
-    const sorted = sortedUniverse();
+    const groups = groupedUniverse();
     const th = (key, label) => {
         const arrow = sortState.key === key ? (sortState.dir > 0 ? "▲" : "▼") : "";
         return `<th class="sortable" data-sort="${key}">${label} <span class="sort-arrow">${arrow}</span></th>`;
     };
+
+    const rows = groups.map((g) => `
+        <tr class="group-row">
+            <td colspan="9" style="background:var(--accent-subtle);font-weight:600;padding:6px 12px;">
+                ${Utils.escapeHtml(g.name)}
+                <span class="badge badge-accent">${g.items.length}</span>
+            </td>
+        </tr>
+        ${g.items.map((u) => {
+            const cats = classificationCache[u.sec_code] || {};
+            const badge = (v) => v ? `<span class="badge badge-accent">${Utils.escapeHtml(v)}</span>` : '<span class="text-muted">-</span>';
+            return `
+            <tr data-code="${Utils.escapeHtml(u.sec_code)}">
+                <td><input type="checkbox" class="row-check" value="${Utils.escapeHtml(u.sec_code)}" style="accent-color:var(--accent);" /></td>
+                <td class="mono">${Utils.escapeHtml(u.sec_code)}</td>
+                <td>${Utils.escapeHtml(u.sec_name || "-")}</td>
+                <td>${badge(cats.asset_type)}</td>
+                <td>${badge(cats.style)}</td>
+                <td>${badge(cats.sector)}</td>
+                <td><span class="badge ${u.is_active ? "badge-success" : "badge-danger"}">${u.is_active ? "在池" : "已移除"}</span></td>
+                <td class="text-muted" style="font-size:12px;">${Utils.formatDate(u.added_at)}</td>
+                <td>
+                    <div class="row-actions btn-group">
+                        <button class="btn btn-sm btn-danger" onclick="removeEtf('${Utils.escapeHtml(u.sec_code)}')">移除</button>
+                    </div>
+                </td>
+            </tr>`;}).join("")}
+    `).join("");
 
     area.innerHTML = `
         <div class="table-wrap">
@@ -221,25 +259,7 @@ function renderUniverseTable(items) {
                     </tr>
                 </thead>
                 <tbody>
-                    ${sorted.map((u) => {
-                        const cats = classificationCache[u.sec_code] || {};
-                        const badge = (v) => v ? `<span class="badge badge-accent">${Utils.escapeHtml(v)}</span>` : '<span class="text-muted">-</span>';
-                        return `
-                        <tr data-code="${Utils.escapeHtml(u.sec_code)}">
-                            <td><input type="checkbox" class="row-check" value="${Utils.escapeHtml(u.sec_code)}" style="accent-color:var(--accent);" /></td>
-                            <td class="mono">${Utils.escapeHtml(u.sec_code)}</td>
-                            <td>${Utils.escapeHtml(u.sec_name || "-")}</td>
-                            <td>${badge(cats.asset_type)}</td>
-                            <td>${badge(cats.style)}</td>
-                            <td>${badge(cats.sector)}</td>
-                            <td><span class="badge ${u.is_active ? "badge-success" : "badge-danger"}">${u.is_active ? "在池" : "已移除"}</span></td>
-                            <td class="text-muted" style="font-size:12px;">${Utils.formatDate(u.added_at)}</td>
-                            <td>
-                                <div class="row-actions btn-group">
-                                    <button class="btn btn-sm btn-danger" onclick="removeEtf('${Utils.escapeHtml(u.sec_code)}')">移除</button>
-                                </div>
-                            </td>
-                        </tr>`;}).join("")}
+                    ${rows}
                 </tbody>
             </table>
         </div>`;
