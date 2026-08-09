@@ -9,31 +9,66 @@ from webapp.main import app
 client = TestClient(app)
 
 
-def test_factor_correlation_valid():
+def test_factor_correlation_instance():
     response = client.post("/api/factors/correlation", json={
-        "factor_names": ["momentum", "volatility", "reversal"],
+        "granularity": "instance",
+        "factor_ids": ["momentum(20)", "momentum(60)", "volatility(20)"],
     })
     assert response.status_code == 200
     data = response.json()
-    assert "factor_names" in data
+    assert "granularity" in data
+    assert data["granularity"] == "instance"
+    assert "labels" in data
     assert "correlation_matrix" in data
-    assert data["factor_names"] == ["momentum", "volatility", "reversal"]
+    assert data["labels"] == ["momentum(20)", "momentum(60)", "volatility(20)"]
     assert len(data["correlation_matrix"]) == 3
     # Diagonal should be 1.0
     for i in range(3):
         assert abs(data["correlation_matrix"][i][i] - 1.0) < 1e-6
 
 
+def test_factor_correlation_instance_default_granularity():
+    # Default granularity is instance, so factor_ids is used.
+    response = client.post("/api/factors/correlation", json={
+        "factor_ids": ["reversal(5)", "reversal(20)"],
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["granularity"] == "instance"
+    assert data["labels"] == ["reversal(5)", "reversal(20)"]
+    assert len(data["correlation_matrix"]) == 2
+
+
+def test_factor_correlation_class():
+    response = client.post("/api/factors/correlation", json={
+        "granularity": "class",
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["granularity"] == "class"
+    assert "volume" not in data["labels"]  # empty class excluded
+    assert "momentum" in data["labels"]
+    assert "volatility" in data["labels"]
+    assert "reversal" in data["labels"]
+    n = len(data["labels"])
+    assert len(data["correlation_matrix"]) == n
+    assert n >= 1
+
+
 def test_factor_correlation_unknown_factor():
     response = client.post("/api/factors/correlation", json={
-        "factor_names": ["does_not_exist"],
+        "granularity": "instance",
+        "factor_ids": ["does_not_exist"],
     })
     assert response.status_code == 400
 
 
 def test_factor_correlation_empty():
-    response = client.post("/api/factors/correlation", json={"factor_names": []})
+    response = client.post("/api/factors/correlation", json={
+        "granularity": "instance",
+        "factor_ids": [],
+    })
     assert response.status_code == 200
     data = response.json()
-    assert data["factor_names"] == []
+    assert data["labels"] == []
     assert data["correlation_matrix"] == []

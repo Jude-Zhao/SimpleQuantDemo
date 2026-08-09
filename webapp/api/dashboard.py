@@ -9,14 +9,20 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from core.analysis.ic import calculate_forward_returns, calculate_rank_ic
+from core.factors.config import list_factor_categories
 from webapp.models.database import get_db
 from webapp.models.strategy_run import StrategyRun
 from webapp.services.data_service import get_etf_price, get_etf_list
-from webapp.services.factor_service import list_factors
+from webapp.services.eaa_faa import build_category_factors, build_category_scores
+from webapp.services.factor_service import list_factor_categories_meta
 from webapp.services.universe_service import list_active_universe
 from webapp.services.strategy_service import DEFAULT_END, DEFAULT_START
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+# Forward-return horizon used for the home-page factor RankIC computation.
+RANK_IC_HORIZON = 5
 
 # FactorRanking cache: keyed by (universe, latest bar date) so it is
 # invalidated as soon as new market data arrives. Guarded by a lock because
@@ -39,11 +45,26 @@ class PricePoint(BaseModel):
     close: float
 
 
-class FactorRankingItem(BaseModel):
+class FactorInstanceRanking(BaseModel):
     name: str
-    display_name: str
+    params: dict
     rank_ic_mean: float
     rank_icir: float
+
+    @property
+    def display_label(self) -> str:
+        """e.g. 'momentum(20)' or 'momentum' when no window param."""
+        window = self.params.get("window")
+        return f"{self.name}({window})" if window is not None else self.name
+
+
+class FactorRankingItem(BaseModel):
+    key: str
+    display_name: str
+    is_empty: bool
+    class_rank_ic_mean: float | None = None
+    class_rank_icir: float | None = None
+    factors: list[FactorInstanceRanking] = []
 
 
 class ReturnRankingItem(BaseModel):
@@ -74,7 +95,9 @@ def get_stats(db: Session = Depends(get_db)):
     from datetime import datetime
 
     universe_count = len(list_active_universe(db))
-    factor_count = len(list_factors())
+    factor_count = sum(
+        len(cat.factors) for cat in list_factor_categories_meta()
+    )
 
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     run_count_today = (
@@ -119,13 +142,17 @@ def get_etf_price_series(
 
 @router.get("/factor-ranking", response_model=list[FactorRankingItem])
 def get_factor_ranking(db: Session = Depends(get_db)):
-    """Compute RankIC mean/IR for recent factors for ranking display.
+    """Compute RankIC statistics for home-page factor ranking, organized by the
+    factor categories declared in ``factors.yaml``.
 
-    Uses a lightweight computation from the first available date range.
-    The RankIC computation is expensive (it re-derives each factor and its
-    IC series on every call), so results are cached keyed by the universe and
-    the latest bar date. The cache is invalidated automatically whenever new
-    market data is synced.
+    Every non-empty category reports both the RankIC of each of its factor
+    instances and the RankIC of the equal-weighted category score. Empty
+    categories (e.g. volume / other) are returned as headers only.
+
+    The RankIC computation is expensive (it re-derives each factor and its IC
+    series on every call), so results are cached keyed by the universe and the
+    latest bar date. The cache is invalidated automatically whenever new market
+    data is synced.
     """
     etfs = get_etf_list(db)
     universe = [e["sec_code"] for e in etfs]
@@ -145,28 +172,62 @@ def get_factor_ranking(db: Session = Depends(get_db)):
     if cached is not None:
         return cached
 
-    from webapp.services.factor_service import compute_factor
+    categories = list_factor_categories()
+    forward_returns = calculate_forward_returns(
+        price_data, horizon=RANK_IC_HORIZON, universe=universe
+    )
+    try:
+        scores = build_category_scores(price_data, universe, categories)
+    except Exception:
+        scores = {}
 
-    ranking = []
-    for meta in list_factors():
-        try:
-            result = compute_factor(
-                factor_name=meta.name,
-                params={},
-                price_data=price_data,
-                macro_data=pd.DataFrame(),
-                universe=universe,
-                horizon=5,
-            )
+    ranking: list[FactorRankingItem] = []
+    for cat in categories:
+        if cat.is_empty:
             ranking.append(FactorRankingItem(
-                name=result.factor_name,
-                display_name=result.display_name,
-                rank_ic_mean=result.ic_result.rank_ic_mean,
-                rank_icir=result.ic_result.rank_icir,
+                key=cat.key,
+                display_name=cat.display_name,
+                is_empty=True,
             ))
-        except Exception:
-            # Skip factors that fail on the default data range.
             continue
+
+        try:
+            matrices = build_category_factors(price_data, universe, cat)
+        except Exception:
+            # Skip categories that fail to build on the default data range.
+            continue
+
+        factors: list[FactorInstanceRanking] = []
+        for inst, matrix in zip(cat.factors, matrices):
+            rank_ic = calculate_rank_ic(matrix, forward_returns).dropna()
+            if rank_ic.empty:
+                continue
+            rank_icir = rank_ic.mean() / rank_ic.std() if rank_ic.std() != 0 else 0.0
+            factors.append(FactorInstanceRanking(
+                name=inst.name,
+                params=inst.params,
+                rank_ic_mean=float(rank_ic.mean()),
+                rank_icir=float(rank_icir),
+            ))
+
+        class_mean = class_icir = None
+        if cat.key in scores:
+            class_rank_ic = calculate_rank_ic(
+                scores[cat.key], forward_returns
+            ).dropna()
+            if not class_rank_ic.empty:
+                class_mean = float(class_rank_ic.mean())
+                std = class_rank_ic.std()
+                class_icir = float(class_mean / std) if std != 0 else 0.0
+
+        ranking.append(FactorRankingItem(
+            key=cat.key,
+            display_name=cat.display_name,
+            is_empty=False,
+            class_rank_ic_mean=class_mean,
+            class_rank_icir=class_icir,
+            factors=factors,
+        ))
 
     with _ranking_cache_lock:
         _ranking_cache[key] = ranking

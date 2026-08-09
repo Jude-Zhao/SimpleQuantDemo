@@ -17,17 +17,27 @@ class FactorParamSchema(BaseModel):
 
 
 class FactorMeta(BaseModel):
+    id: str
     name: str
     display_name: str
     category: str
     description: str
     formula: str
     direction: str
+    params: dict[str, Any] = Field(default_factory=dict)
     params_schema: dict[str, FactorParamSchema]
 
 
+class FactorCategoryMeta(BaseModel):
+    key: str
+    display_name: str
+    is_empty: bool
+    factors: list[FactorMeta] = Field(default_factory=list)
+
+
 class FactorComputeRequest(BaseModel):
-    factor_name: str
+    factor_id: str | None = None
+    factor_name: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     horizon: int = 5
 

@@ -16,15 +16,27 @@ core/factors/
 ├── utils.py             # 公共工具函数（pivot / validate）
 ├── exceptions.py        # 因子校验异常
 ├── README.md            # 本手册
-└── builtin/             # 内置因子目录（新增因子放这里）
+└── builtin/             # 内置因子目录（按分类分子包）
     ├── __init__.py
-    ├── momentum.py      # 动量因子
-    ├── value.py         # 反转因子
-    └── volatility.py    # 波动率因子
+    ├── factors.yaml     # 因子分类注册（5 类，统一在此登记实例）
+    ├── momentum/        # 动量类
+    │   ├── __init__.py
+    │   └── momentum.py
+    ├── volatility/      # 波动类
+    │   ├── __init__.py
+    │   └── volatility.py
+    ├── reversal/        # 反转类
+    │   ├── __init__.py
+    │   └── reversal.py
+    ├── volume/          # 量能类（当前空，预留）
+    │   └── __init__.py
+    └── other/           # 其他类（当前空，预留）
+        └── __init__.py
 ```
 
 - **基础设施**（`base` / `registry` / `utils` / `exceptions`）与**因子实现**（`builtin/`）分离，扫描时自动跳过基础设施模块。
-- 内置因子统一放在 `builtin/` 子包下；你也可以在其它子包中放自定义因子，只要在 `core.factors` 包树下即可被自动发现。
+- 内置因子按**分类**放在 `builtin/` 下的子包文件夹中，与 `factors.yaml` 的 5 类一一对应。
+- 新增因子流程：① 在对应分类的子包下新建 `.py` 文件并 `@register_factor` 注册；② 在 `factors.yaml` 对应分类下登记实例（name + params）。registry 递归扫描会自动发现子包中的因子。
 
 ## 三、自动发现机制
 
@@ -40,7 +52,7 @@ core/factors/
 
 ### 步骤 1：新建文件
 
-在 `core/factors/builtin/` 下新建一个 `.py` 文件，例如 `trend.py`。
+在 `core/factors/builtin/` 下**对应分类的子包**中新建 `.py` 文件，例如动量类下新建 `builtin/momentum/trend.py`。
 
 > ⚠️ 文件名不能是 `base`、`registry`、`utils`、`exceptions`、`__init__`，也不能以 `_` 开头，否则不会被扫描。
 
@@ -104,7 +116,22 @@ class MADeviationFactor(FactorBuilder):
         return factor
 ```
 
-### 步骤 3：验证接入
+### 步骤 3：在 factors.yaml 登记
+
+`factors.yaml` 是因子列表的唯一来源（Web 看板 / 首页 / 策略共用）。在对应分类下登记你想用的**实例**（name + 参数）：
+
+```yaml
+categories:
+  momentum:
+    display_name: "动量"
+    factors:
+      - name: ma_deviation
+        params: { window: 20 }
+```
+
+每个分类可登记多个实例（不同窗口）。未在 yaml 登记的因子即使已注册，也不会出现在 Web 看板。
+
+### 步骤 4：验证接入
 
 1. 启动服务或调用 `core.factors.registry.discover_factors()`，新因子即被自动注册。
 2. 用 `get_factor_class("ma_deviation")` 取回并构建，确认可正常计算。
@@ -148,5 +175,7 @@ class MADeviationFactor(FactorBuilder):
 | 注册名 | 显示名 | 分类 | 方向 | 公式 |
 |--------|--------|------|------|------|
 | `momentum` | 动量因子 | 动量 | positive | MOM(t) = close(t) / close(t-N) - 1 |
-| `reversal` | 反转因子 | 价值 | positive | REV(t) = -(close(t) / close(t-N) - 1) |
-| `volatility` | 波动率因子 | 波动率 | negative | VOL(t) = std(returns(t-N+1..t)) * sqrt(annualization) |
+| `reversal` | 反转因子 | 反转 | positive | REV(t) = -(close(t) / close(t-N) - 1) |
+| `volatility` | 波动率因子 | 波动 | positive | VOL(t) = -std(returns(t-N+1..t)) * sqrt(annualization) |
+
+> 以上为**注册名**；实际在 Web 看板 / 首页展示的是 `factors.yaml` 中登记的**实例**（如 `momentum(20)` / `momentum(60)`），每个实例带独立窗口参数。

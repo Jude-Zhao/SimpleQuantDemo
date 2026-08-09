@@ -1,0 +1,1 @@
+"""Volatility factor implementations (分类: 波动)."""

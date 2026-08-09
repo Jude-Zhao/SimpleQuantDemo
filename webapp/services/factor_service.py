@@ -12,8 +12,10 @@ from core.analysis.ic import (
     calculate_factor_ic,
     calculate_rank_ic,
 )
-from core.factors.registry import get_factor_class, get_factor_registry
+from core.factors.config import FactorCategory, FactorInstance, list_factor_categories
+from core.factors.registry import get_factor_class
 from webapp.schemas.factor import (
+    FactorCategoryMeta,
     FactorComputeResponse,
     FactorGroupReturn,
     FactorICResult,
@@ -26,24 +28,57 @@ from webapp.schemas.factor_correlation import (
 )
 
 
-def list_factors() -> list[FactorMeta]:
-    """Return metadata for all registered factors."""
-    registry = get_factor_registry()
-    result: list[FactorMeta] = []
-    for name, cls in registry.items():
-        params = {
-            k: FactorParamSchema(**v) for k, v in cls.params_schema.items()
-        }
-        result.append(FactorMeta(
-            name=name,
-            display_name=getattr(cls, "display_name", name),
-            category=getattr(cls, "category", ""),
-            description=getattr(cls, "description", ""),
-            formula=getattr(cls, "formula", ""),
-            direction=getattr(cls, "direction", "positive"),
-            params_schema=params,
-        ))
+def instance_id(inst: FactorInstance) -> str:
+    """Stable label for a factor instance: ``name(window)`` or ``name``."""
+    window = inst.params.get("window")
+    return f"{inst.name}({window})" if window is not None else inst.name
+
+
+def list_factor_categories_meta() -> list[FactorCategoryMeta]:
+    """Return factor metadata organized by the ``factors.yaml`` categories."""
+    result: list[FactorCategoryMeta] = []
+    for cat in list_factor_categories():
+        cat_meta = FactorCategoryMeta(
+            key=cat.key,
+            display_name=cat.display_name,
+            is_empty=cat.is_empty,
+            factors=[],
+        )
+        for inst in cat.factors:
+            cls = get_factor_class(inst.name)
+            if cls is None:
+                continue
+            params = {
+                k: FactorParamSchema(**v) for k, v in cls.params_schema.items()
+            }
+            cat_meta.factors.append(FactorMeta(
+                id=instance_id(inst),
+                name=inst.name,
+                display_name=getattr(cls, "display_name", inst.name),
+                category=cat.display_name,
+                description=getattr(cls, "description", ""),
+                formula=getattr(cls, "formula", ""),
+                direction=getattr(cls, "direction", "positive"),
+                params=dict(inst.params),
+                params_schema=params,
+            ))
+        result.append(cat_meta)
     return result
+
+
+def resolve_instance(instance_id_or_name: str) -> tuple[str, dict]:
+    """Resolve a factor id (``momentum(20)``) or plain name into (name, params).
+
+    Plain names resolve to the registry default params (no window override).
+    """
+    if "(" in instance_id_or_name and instance_id_or_name.endswith(")"):
+        name, raw = instance_id_or_name.split("(", 1)
+        window = raw[:-1]
+        try:
+            return name, {"window": int(window)}
+        except ValueError:
+            return instance_id_or_name, {}
+    return instance_id_or_name, {}
 
 
 def compute_factor(
@@ -121,32 +156,36 @@ def compute_factor_correlation(
     price_data: pd.DataFrame,
     macro_data: pd.DataFrame,
     universe: list[str],
+    categories: tuple[FactorCategory, ...] | None = None,
 ) -> FactorCorrelationResponse:
-    """Compute the cross-sectional correlation of factor values over time.
+    """Compute a correlation matrix between factors.
 
-    For each date, the factor values across securities are correlated; the
-    resulting per-date correlations are averaged into a single matrix.
+    At ``instance`` granularity, each requested factor id resolves to a factor
+    matrix built with its own params. At ``class`` granularity, non-empty
+    categories are collapsed into equal-weighted category scores and their
+    correlation is returned.
     """
-    panel: dict[str, pd.DataFrame] = {}
-    for name in req.factor_names:
-        cls = get_factor_class(name)
-        if cls is None:
-            raise ValueError(f"Factor not found: {name}")
-        panel[name] = cls().build(price_data, macro_data, universe)
-
-    if not panel:
-        return FactorCorrelationResponse(
-            factor_names=[],
-            correlation_matrix=[],
+    if req.granularity == "class":
+        return _class_granularity_correlation(
+            price_data, universe, categories
         )
+    return _instance_granularity_correlation(
+        req, price_data, macro_data, universe
+    )
 
-    # Align all factor matrices to a common date index.
+
+def _correlation_of_panel(
+    panel: dict[str, pd.DataFrame],
+) -> tuple[list[str], list[list[float]]]:
+    """Cross-sectional correlation of factor matrices averaged over dates."""
+    if not panel:
+        return [], []
+
     common_index = panel[list(panel.keys())[0]].index
     for mat in panel.values():
         common_index = common_index.intersection(mat.index)
     common_index = common_index.sort_values()
 
-    # Collect per-date cross-sectional correlation, then average.
     date_corrs: list[pd.DataFrame] = []
     for date in common_index:
         cross = pd.DataFrame({
@@ -157,25 +196,57 @@ def compute_factor_correlation(
         corr = cross.corr()
         date_corrs.append(corr)
 
+    names = list(panel.keys())
     if not date_corrs:
-        n = len(req.factor_names)
-        return FactorCorrelationResponse(
-            factor_names=list(req.factor_names),
-            correlation_matrix=[
-                [1.0 if i == j else 0.0 for j in range(n)]
-                for i in range(n)
-            ],
-        )
+        return names, [
+            [1.0 if i == j else 0.0 for j in range(len(names))]
+            for i in range(len(names))
+        ]
 
     avg_corr = sum(date_corrs) / len(date_corrs)
-
-    names = list(req.factor_names)
     matrix = [
         [float(avg_corr.loc[a, b]) for b in names]
         for a in names
     ]
+    return names, matrix
+
+
+def _instance_granularity_correlation(
+    req: FactorCorrelationRequest,
+    price_data: pd.DataFrame,
+    macro_data: pd.DataFrame,
+    universe: list[str],
+) -> FactorCorrelationResponse:
+    panel: dict[str, pd.DataFrame] = {}
+    for fid in req.factor_ids:
+        name, params = resolve_instance(fid)
+        cls = get_factor_class(name)
+        if cls is None:
+            raise ValueError(f"Factor not found: {name}")
+        panel[fid] = cls(**params).build(price_data, macro_data, universe)
+
+    names, matrix = _correlation_of_panel(panel)
     return FactorCorrelationResponse(
-        factor_names=names,
+        granularity="instance",
+        labels=names,
+        correlation_matrix=matrix,
+    )
+
+
+def _class_granularity_correlation(
+    price_data: pd.DataFrame,
+    universe: list[str],
+    categories: tuple[FactorCategory, ...] | None,
+) -> FactorCorrelationResponse:
+    cats = categories if categories is not None else list_factor_categories()
+    from webapp.services.eaa_faa import build_category_scores
+
+    scores = build_category_scores(price_data, universe, cats)
+    panel = {key: mat for key, mat in scores.items()}
+    names, matrix = _correlation_of_panel(panel)
+    return FactorCorrelationResponse(
+        granularity="class",
+        labels=names,
         correlation_matrix=matrix,
     )
 

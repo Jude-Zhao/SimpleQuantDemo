@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from webapp.models.database import get_db
-from webapp.schemas.factor import FactorComputeRequest, FactorComputeResponse, FactorMeta
+from webapp.schemas.factor import (
+    FactorCategoryMeta,
+    FactorComputeRequest,
+    FactorComputeResponse,
+)
 from webapp.schemas.factor_correlation import (
     FactorCorrelationRequest,
     FactorCorrelationResponse,
@@ -16,16 +20,17 @@ from webapp.services.data_service import get_etf_list, get_etf_price
 from webapp.services.factor_service import (
     compute_factor,
     compute_factor_correlation,
-    list_factors,
+    list_factor_categories_meta,
+    resolve_instance,
 )
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
 
-@router.get("", response_model=list[FactorMeta])
+@router.get("", response_model=list[FactorCategoryMeta])
 def get_factors():
-    """Get metadata for all available factors."""
-    return list_factors()
+    """Get factors organized by the ``factors.yaml`` categories."""
+    return list_factor_categories_meta()
 
 
 @router.post("/compute", response_model=FactorComputeResponse)
@@ -57,10 +62,18 @@ def compute_factor_endpoint(
             detail="Unable to fetch price data from data source",
         )
 
+    # Resolve the factor instance: prefer factor_id, else factor_name + params.
+    if req.factor_id:
+        name, params = resolve_instance(req.factor_id)
+    elif req.factor_name:
+        name, params = req.factor_name, req.params
+    else:
+        raise HTTPException(status_code=400, detail="factor_id or factor_name required")
+
     try:
         return compute_factor(
-            factor_name=req.factor_name,
-            params=req.params,
+            factor_name=name,
+            params=params,
             price_data=price_data,
             macro_data=pd.DataFrame(),
             universe=universe,
@@ -75,7 +88,11 @@ def factor_correlation_endpoint(
     req: FactorCorrelationRequest,
     db: Session = Depends(get_db),
 ):
-    """Compute the cross-sectional correlation matrix between factors."""
+    """Compute the cross-sectional correlation matrix between factors.
+
+    ``granularity=instance`` correlates factor instances (by factor_ids);
+    ``granularity=class`` correlates non-empty category scores.
+    """
     etfs = get_etf_list(db)
     universe = [e["sec_code"] for e in etfs]
 

@@ -41,3 +41,150 @@
     font-family: var(--font-mono);
     font-weight: 500;
 }
+
+/* ── Factor ranking by category (HTML bars) ─────────────── */
+.factor-ranking {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.fr-cat {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--bg-surface);
+    padding: var(--space-3) var(--space-4);
+}
+
+.fr-cat-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-3);
+}
+
+.fr-cat-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.fr-score {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--accent-subtle);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+}
+
+.fr-score-label {
+    color: var(--text-muted);
+}
+
+.fr-score-val {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.fr-score-sub {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.fr-score-empty {
+    background: transparent;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.fr-factors {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.fr-factor {
+    display: grid;
+    grid-template-columns: 150px 1fr 70px;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.fr-factor-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+}
+
+.fr-track {
+    position: relative;
+    height: 12px;
+    background: var(--bg-base);
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+}
+
+.fr-track-zero {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--border-hover);
+}
+
+.fr-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 999px;
+}
+
+.fr-fill.up {
+    left: 50%;
+    background: var(--success);
+}
+
+.fr-fill.down {
+    right: 50%;
+    background: var(--danger);
+}
+
+.fr-factor-val {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    text-align: right;
+}
+
+.fr-cat-empty .fr-empty-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: var(--space-2) 0;
+}
+
+/* ── Factor list (grouped by category) ─────────────────── */
+.fr-list-group {
+    margin-bottom: var(--space-3);
+}
+
+.fr-list-head {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-2);
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-subtle);
+}

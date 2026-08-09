@@ -61,13 +61,16 @@ function renderDashboard(container) {
         </div>
 
         <div class="grid-12" style="margin-top:var(--space-4);">
-            <div class="col-4">
+            <div class="col-12">
                 <div class="card">
-                    <div class="card-title">因子 RankIC 排名</div>
-                    <div id="factor-ranking-chart" class="chart-sm"></div>
+                    <div class="card-title">因子 RankIC 排名（按分类）</div>
+                    <div id="factor-ranking-chart"></div>
                 </div>
             </div>
-            <div class="col-8">
+        </div>
+
+        <div class="grid-12" style="margin-top:var(--space-4);">
+            <div class="col-12">
                 <div class="card">
                     <div class="card-title">最近策略运行</div>
                     <table class="table" id="recent-runs-table" style="margin:-8px -4px;">
@@ -194,45 +197,58 @@ function loadFactorRanking() {
                 el.innerHTML = `<div class="empty-state"><div class="empty-title">暂无因子数据</div></div>`;
                 return;
             }
-            const sorted = [...ranking].sort((a, b) => b.rank_ic_mean - a.rank_ic_mean);
-            const names = sorted.map((r) => r.display_name || r.name);
-            const values = sorted.map((r) => r.rank_ic_mean);
-            const up = Charts.semanticColor("up");
-            const down = Charts.semanticColor("down");
 
-            Charts.render(el, () => ({
-                tooltip: {
-                    trigger: "axis",
-                    axisPointer: { type: "shadow" },
-                    formatter: (params) => {
-                        const p = params[0];
-                        const item = sorted[p.dataIndex];
-                        return `<div class="tt-title">${Utils.escapeHtml(p.name)}</div>
-                            <div class="tt-row"><span>RankIC 均值</span><span class="tt-value">${item.rank_ic_mean.toFixed(4)}</span></div>
-                            <div class="tt-row"><span>RankICIR</span><span class="tt-value">${item.rank_icir.toFixed(4)}</span></div>`;
-                    },
-                    className: "chart-tooltip-custom",
-                },
-                grid: { left: 96, right: 48, top: 8, bottom: 24 },
-                xAxis: { type: "value", axisLabel: { formatter: (v) => v.toFixed(2) } },
-                yAxis: { type: "category", data: names },
-                series: [{
-                    type: "bar",
-                    data: values.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? up : down, opacity: 0.9 } })),
-                    barWidth: 12,
-                    label: {
-                        show: true,
-                        position: "right",
-                        formatter: (p) => p.value.toFixed(4),
-                        fontSize: 11,
-                    },
-                }],
-                extra: {},
-            }));
+            // A symmetric bar scale centered at 0, sized by the largest absolute
+            // RankIC across every factor instance so bars stay comparable.
+            const maxAbs = Math.max(0.0001, ...ranking.flatMap((c) =>
+                (c.factors || []).map((f) => Math.abs(f.rank_ic_mean))
+            ));
+
+            // One section per category: header carries the class score, body
+            // lists each factor instance as a centered bar.
+            el.innerHTML = ranking.map((cat) => {
+                const head = cat.is_empty
+                    ? `<span class="fr-score fr-score-empty">暂无因子</span>`
+                    : `<span class="fr-score">
+                            <span class="fr-score-label">类得分 RankIC</span>
+                            <span class="fr-score-val">${cat.class_rank_ic_mean.toFixed(4)}</span>
+                            <span class="fr-score-sub">IR ${cat.class_rank_icir.toFixed(2)}</span>
+                       </span>`;
+
+                const factors = (cat.factors || []).map((f) => {
+                    const w = f.params && f.params.window;
+                    const label = w != null ? `${f.name}(${w})` : f.name;
+                    const pct = Math.min(50, (Math.abs(f.rank_ic_mean) / maxAbs) * 50);
+                    const pos = f.rank_ic_mean >= 0 ? "up" : "down";
+                    return `
+                        <div class="fr-factor">
+                            <span class="fr-factor-label" title="${Utils.escapeHtml(isWide(label) ? label : "")}">${Utils.escapeHtml(label)}</span>
+                            <span class="fr-track">
+                                <span class="fr-track-zero"></span>
+                                <span class="fr-fill ${pos}" style="width:${pct}%"></span>
+                            </span>
+                            <span class="fr-factor-val">${f.rank_ic_mean.toFixed(4)}</span>
+                        </div>`;
+                }).join("");
+
+                return `
+                    <div class="fr-cat${cat.is_empty ? " fr-cat-empty" : ""}">
+                        <div class="fr-cat-head">
+                            <span class="fr-cat-name">${Utils.escapeHtml(cat.display_name)}</span>
+                            ${head}
+                        </div>
+                        ${cat.is_empty ? `<div class="fr-empty-hint">该分类下暂无因子配置</div>` : `<div class="fr-factors">${factors}</div>`}
+                    </div>`;
+            }).join("");
         })
         .catch((e) => {
             el.innerHTML = `<div class="alert alert-error">加载排名失败: ${Utils.escapeHtml(e.message)}</div>`;
         });
+}
+
+// Length heuristic so long factor labels truncate instead of widening the row.
+function isWide(label) {
+    return label.length > 18;
 }
 
 function loadRecentRuns() {

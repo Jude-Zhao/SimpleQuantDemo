@@ -5,7 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from webapp.services.factor_service import compute_factor, list_factors
+from webapp.services.factor_service import (
+    compute_factor,
+    list_factor_categories_meta,
+)
 
 
 def _make_price_data(n_dates: int = 60, n_sec: int = 10, seed: int = 42) -> pd.DataFrame:
@@ -30,20 +33,23 @@ def _make_price_data(n_dates: int = 60, n_sec: int = 10, seed: int = 42) -> pd.D
 
 
 def test_list_factors():
-    factors = list_factors()
+    cats = list_factor_categories_meta()
+    factors = [f for cat in cats for f in cat.factors]
     assert len(factors) >= 3
-    names = [f.name for f in factors]
-    assert "momentum" in names
-    assert "volatility" in names
-    assert "reversal" in names
+    ids = [f.id for f in factors]
+    assert "momentum(20)" in ids
+    assert "volatility(20)" in ids
+    assert "reversal(20)" in ids
 
-    # Check meta fields
+    # Check meta fields on an instance
     f = next(f for f in factors if f.name == "momentum")
+    assert f.id == "momentum(20)" or f.id.startswith("momentum(")
     assert f.display_name == "动量因子"
     assert f.category == "动量"
     assert f.formula
     assert f.description
     assert f.direction == "positive"
+    assert f.params == {"window": 20}
     assert "window" in f.params_schema
     assert f.params_schema["window"].type == "int"
     assert f.params_schema["window"].default == 5

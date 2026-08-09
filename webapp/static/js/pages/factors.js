@@ -76,73 +76,99 @@ function renderFactors(container) {
     });
 }
 
-let factorMetasCache = [];
-let lastResults = null; // { results: [...], correlation: [...] }
+let factorMetasCache = []; // list of category groups { key, display_name, is_empty, factors: [...] }
+let lastResults = null; // { results: [...], correlation: {...}, ids: [...], horizon }
 
 async function loadFactorList() {
     const listEl = document.getElementById("factor-list");
     try {
         factorMetasCache = await API.listFactors();
-        if (!factorMetasCache.length) {
+        const all = factorMetasCache.flatMap((c) => c.factors || []);
+        if (!all.length) {
             listEl.innerHTML = `<div class="empty-state"><div class="empty-title">暂无因子</div></div>`;
             return;
         }
-        listEl.innerHTML = factorMetasCache
-            .map(
-                (f, i) => `
-                <label class="factor-chip" style="display:flex;width:100%;margin-bottom:8px;border-radius:8px;" data-factor="${f.name}">
-                    <input type="checkbox" value="${f.name}" ${i < 3 ? "checked" : ""} style="flex-shrink:0;" />
-                    <span style="flex:1;">${Utils.escapeHtml(f.display_name || f.name)}</span>
-                    <span class="text-muted" style="font-size:11px;">${Utils.escapeHtml(f.category || "")}</span>
-                </label>`
-            )
-            .join("");
+
+        // Build grouped markup: category header + instance checkboxes.
+        let checkedCount = 0;
+        const html = factorMetasCache.map((cat) => {
+            if (cat.is_empty) {
+                return `
+                    <div class="fr-list-group">
+                        <div class="fr-list-head">${Utils.escapeHtml(cat.display_name)}<span class="text-muted">（暂无）</span></div>
+                    </div>`;
+            }
+            return `
+                <div class="fr-list-group">
+                    <div class="fr-list-head">${Utils.escapeHtml(cat.display_name)}</div>
+                    ${cat.factors.map((f) => {
+                        const checked = checkedCount < 3;
+                        if (checked) checkedCount++;
+                        return `
+                        <label class="factor-chip" style="display:flex;width:100%;margin-bottom:6px;border-radius:8px;" data-factor-id="${f.id}">
+                            <input type="checkbox" value="${f.id}" ${checked ? "checked" : ""} style="flex-shrink:0;" />
+                            <span style="flex:1;">${Utils.escapeHtml(f.display_name || f.id)}</span>
+                            <span class="text-muted" style="font-size:11px;">${Utils.escapeHtml(f.id)}</span>
+                        </label>`;
+                    }).join("")}
+                </div>`;
+        }).join("");
+
+        listEl.innerHTML = html;
 
         listEl.querySelectorAll(".factor-chip").forEach((chip) => {
             const checkbox = chip.querySelector("input");
             const sync = () => {
                 chip.classList.toggle("checked", checkbox.checked);
-                if (chip.dataset.factor) {
-                    renderFactorDetail(chip.dataset.factor);
-                }
             };
             checkbox.addEventListener("change", sync);
             chip.addEventListener("click", (e) => {
                 if (e.target.tagName !== "INPUT") {
-                    renderFactorDetail(chip.dataset.factor, true);
+                    renderFactorDetail(chip.dataset.factorId, true);
                 }
             });
             sync();
         });
+
+        // Auto-open detail for the first factor.
+        const first = all[0];
+        if (first) renderFactorDetail(first.id, false);
     } catch (e) {
         listEl.innerHTML = `<div class="alert alert-error">加载失败: ${Utils.escapeHtml(e.message)}</div>`;
     }
 }
 
-function renderFactorDetail(name, force = false) {
+function factorMetaById(id) {
+    for (const cat of factorMetasCache) {
+        const f = (cat.factors || []).find((x) => x.id === id);
+        if (f) return f;
+    }
+    return null;
+}
+
+function renderFactorDetail(id, force = false) {
     const card = document.getElementById("factor-detail-card");
-    const meta = factorMetasCache.find((f) => f.name === name);
+    const meta = factorMetaById(id);
     if (!meta) return;
     card.style.display = "block";
     const dirClass = meta.direction === "正向" || meta.direction === "positive"
         ? "text-success" : meta.direction === "负向" || meta.direction === "negative"
             ? "text-danger" : "";
     card.innerHTML = `
-        <div class="card-title card-title-sm" style="margin-bottom:12px;">📌 ${Utils.escapeHtml(meta.display_name || meta.name)}</div>
+        <div class="card-title card-title-sm" style="margin-bottom:12px;">📌 ${Utils.escapeHtml(meta.display_name || meta.id)}</div>
         <div style="font-size:13px;line-height:1.9;">
             <div><span class="text-muted">类别:</span> ${Utils.escapeHtml(meta.category || "-")}</div>
             <div><span class="text-muted">方向:</span> <span class="${dirClass}">${Utils.escapeHtml(meta.direction || "-")}</span></div>
             <div><span class="text-muted">公式:</span> <code>${Utils.escapeHtml(meta.formula || "-")}</code></div>
             <div><span class="text-muted">描述:</span> ${Utils.escapeHtml(meta.description || "-")}</div>
-            ${meta.params_schema ? `<div><span class="text-muted">参数:</span>
-                <code>${Object.entries(meta.params_schema)
-                    .map(([k, v]) => `${k}=${v.default ?? ""}`)
-                    .join(", ")}</code></div>` : ""}
+            <div><span class="text-muted">实例:</span> <code>${Utils.escapeHtml(meta.id)}</code></div>
+            ${meta.params && Object.keys(meta.params).length ? `<div><span class="text-muted">参数:</span>
+                <code>${Object.entries(meta.params).map(([k, v]) => `${k}=${v}`).join(", ")}</code></div>` : ""}
         </div>`;
     if (!force) {
         // Auto-open detail for the first checked factor
         const firstChecked = document.querySelector("#factor-list input:checked");
-        if (firstChecked && firstChecked.value !== name) return;
+        if (firstChecked && firstChecked.value !== id) return;
     }
 }
 
@@ -151,8 +177,8 @@ function selectedFactorNames() {
 }
 
 async function runSelectedFactors() {
-    const names = selectedFactorNames();
-    if (!names.length) {
+    const ids = selectedFactorNames();
+    if (!ids.length) {
         Components.toast("请至少选择一个因子", "warning");
         return;
     }
@@ -161,22 +187,22 @@ async function runSelectedFactors() {
     panel.innerHTML = `<div class="loading"><div class="spinner"></div>计算中...</div>`;
 
     try {
-        // Compute each factor's IC series and group returns in parallel
+        // Compute each factor instance's IC series and group returns in parallel
         const results = await Promise.all(
-            names.map((name) =>
-                API.computeFactor({ factor_name: name, params: {}, horizon })
+            ids.map((fid) =>
+                API.computeFactor({ factor_id: fid, params: {}, horizon })
             )
         );
-        // Correlation matrix (best effort)
+        // Correlation matrix (best effort), instance granularity by default.
         let correlation = null;
         try {
-            const corrResp = await API.factorCorrelation(names);
-            correlation = corrResp.correlation_matrix || null;
+            const corrResp = await API.factorCorrelation({ granularity: "instance", factorIds: ids });
+            correlation = corrResp || null;
         } catch (e) {
             correlation = null;
         }
 
-        lastResults = { results, correlation, names, horizon };
+        lastResults = { results, correlation, ids, horizon };
         document.querySelector('#analysis-tabs .tab-pill[data-tab="ic"]').classList.add("active");
         document.querySelectorAll("#analysis-tabs .tab-pill").forEach((t) => {
             t.classList.toggle("active", t.dataset.tab === "ic");
@@ -261,7 +287,7 @@ function renderIcTab(panel) {
 }
 
 function renderCorrTab(panel) {
-    const { correlation, names, results } = lastResults;
+    const { correlation } = lastResults;
     if (!correlation) {
         panel.innerHTML = `<div class="empty-state">
             <div class="empty-icon">🔗</div>
@@ -271,66 +297,95 @@ function renderCorrTab(panel) {
         return;
     }
     panel.innerHTML = `
-        <div class="text-muted" style="font-size:12px;margin-bottom:8px;">鼠标悬停查看相关系数，色阶：红(-1) ~ 白(0) ~ 绿(+1)</div>
+        <div class="flex-between" style="margin-bottom:8px;">
+            <div class="text-muted" style="font-size:12px;">鼠标悬停查看相关系数，色阶：红(-1) ~ 白(0) ~ 绿(+1)</div>
+            <div class="btn-group">
+                <button class="btn btn-sm ${correlation.granularity === "instance" ? "btn-primary" : ""}" id="corr-btn-instance">按实例</button>
+                <button class="btn btn-sm ${correlation.granularity === "class" ? "btn-primary" : ""}" id="corr-btn-class">按类</button>
+            </div>
+        </div>
         <div id="corr-chart" class="chart"></div>`;
 
     const el = document.getElementById("corr-chart");
-    const labels = names.map((n) => {
-        const meta = results.find((r) => r.factor_name === n);
-        return (meta?.display_name || n).length > 6 ? (meta?.display_name || n).slice(0, 6) + "…" : meta?.display_name || n;
-    });
+    const labels = (correlation.labels || []).map((n) =>
+        n.length > 12 ? n.slice(0, 12) + "…" : n
+    );
 
-    Charts.render(el, () => ({
-        tooltip: {
-            position: "top",
-            formatter: (p) => {
-                const v = p.value;
-                if (!Array.isArray(v) || typeof v[2] !== "number") return "";
-                return `<div class="tt-title">${Utils.escapeHtml(labels[v[0]])} × ${Utils.escapeHtml(labels[v[1]])}</div>
-                    <div class="tt-row"><span class="tt-value">${v[2].toFixed(3)}</span></div>`;
+    const draw = () => {
+        Charts.render(el, () => ({
+            tooltip: {
+                position: "top",
+                formatter: (p) => {
+                    const v = p.value;
+                    if (!Array.isArray(v) || typeof v[2] !== "number") return "";
+                    return `<div class="tt-title">${Utils.escapeHtml((correlation.labels || [])[v[0]])} × ${Utils.escapeHtml((correlation.labels || [])[v[1]])}</div>
+                        <div class="tt-row"><span class="tt-value">${v[2].toFixed(3)}</span></div>`;
+                },
+                className: "chart-tooltip-custom",
             },
-            className: "chart-tooltip-custom",
-        },
-        grid: { left: 72, right: 16, top: 16, bottom: 48 },
-        xAxis: {
-            type: "category",
-            data: labels,
-            splitArea: { show: true },
-            axisLabel: { rotate: 30 },
-        },
-        yAxis: { type: "category", data: labels, splitArea: { show: true } },
-        visualMap: {
-            min: -1,
-            max: 1,
-            calculable: true,
-            orient: "horizontal",
-            left: "center",
-            bottom: 4,
-            inRange: {
-                color: [
-                    Charts.semanticColor("down"),
-                    "#e9e6e1",
-                    "#ffffff",
-                    "#e9e6e1",
-                    Charts.semanticColor("up"),
-                ],
+            grid: { left: 90, right: 16, top: 16, bottom: 64 },
+            xAxis: {
+                type: "category",
+                data: labels,
+                splitArea: { show: true },
+                axisLabel: { rotate: 40 },
             },
-            textStyle: { color: cssTick() },
-        },
-        series: [{
-            type: "heatmap",
-            data: correlation
-                .map((row, i) => row.map((v, j) => [j, i, v]))
-                .flat(),
-            label: {
-                show: true,
-                fontSize: 11,
-                formatter: (p) => (typeof p.value[2] === "number" ? p.value[2].toFixed(2) : ""),
+            yAxis: { type: "category", data: labels, splitArea: { show: true } },
+            visualMap: {
+                min: -1,
+                max: 1,
+                calculable: true,
+                orient: "horizontal",
+                left: "center",
+                bottom: 4,
+                inRange: {
+                    color: [
+                        Charts.semanticColor("down"),
+                        "#e9e6e1",
+                        "#ffffff",
+                        "#e9e6e1",
+                        Charts.semanticColor("up"),
+                    ],
+                },
+                textStyle: { color: cssTick() },
             },
-            emphasis: { itemStyle: { borderColor: "#2c2c2c", borderWidth: 1 } },
-        }],
-        extra: {},
-    }));
+            series: [{
+                type: "heatmap",
+                data: correlation.correlation_matrix
+                    .map((row, i) => row.map((v, j) => [j, i, v]))
+                    .flat(),
+                label: {
+                    show: true,
+                    fontSize: 11,
+                    formatter: (p) => (typeof p.value[2] === "number" ? p.value[2].toFixed(2) : ""),
+                },
+                emphasis: { itemStyle: { borderColor: "#2c2c2c", borderWidth: 1 } },
+            }],
+            extra: {},
+        }));
+    };
+
+    draw();
+
+    async function fetchCorr(granularity) {
+        panel.querySelector("#corr-chart").innerHTML = `<div class="loading"><div class="spinner"></div>计算中...</div>`;
+        try {
+            const resp = await API.factorCorrelation({
+                granularity,
+                factorIds: lastResults.ids,
+                factorNames: [], // class granularity derives classes server-side
+            });
+            correlation.granularity = resp.granularity;
+            correlation.labels = resp.labels;
+            correlation.correlation_matrix = resp.correlation_matrix;
+            draw();
+        } catch (e) {
+            panel.querySelector("#corr-chart").innerHTML = `<div class="alert alert-error">计算失败: ${Utils.escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    panel.querySelector("#corr-btn-instance").addEventListener("click", () => fetchCorr("instance"));
+    panel.querySelector("#corr-btn-class").addEventListener("click", () => fetchCorr("class"));
 }
 
 function cssTick() {

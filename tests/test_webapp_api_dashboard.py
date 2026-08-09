@@ -18,6 +18,7 @@ def test_dashboard_stats():
     assert "run_count_today" in data
     assert "system_status" in data
     assert data["system_status"] == "ok"
+    # factor_count counts factor instances from factors.yaml (>= 3 non-empty classes)
     assert data["factor_count"] >= 3
 
 
@@ -50,10 +51,23 @@ def test_dashboard_factor_ranking():
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
+    keys = set()
     for item in data:
-        assert "name" in item
-        assert "rank_ic_mean" in item
-        assert "rank_icir" in item
+        assert "key" in item
+        assert "display_name" in item
+        assert "is_empty" in item
+        assert "class_rank_ic_mean" in item
+        assert "class_rank_icir" in item
+        assert "factors" in item
+        assert isinstance(item["factors"], list)
+        keys.add(item["key"])
+        for f in item["factors"]:
+            assert "name" in f
+            assert "params" in f
+            assert "rank_ic_mean" in f
+            assert "rank_icir" in f
+    # factor categories come from factors.yaml, so keys must be unique.
+    assert len(keys) == len(data)
 
 
 def test_dashboard_returns_ranking():

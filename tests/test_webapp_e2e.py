@@ -43,8 +43,8 @@ def test_e2e_add_universe_and_get_factors():
     assert factors.status_code == 200
     data = factors.json()
     assert len(data) >= 3
-    names = {f["name"] for f in data}
-    assert {"momentum", "volatility", "reversal"}.issubset(names)
+    keys = {c["key"] for c in data}
+    assert {"momentum", "volatility", "reversal"}.issubset(keys)
 
 
 def test_e2e_compute_factor():

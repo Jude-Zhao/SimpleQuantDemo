@@ -9,8 +9,8 @@ on startup — see ``core/factors/README.md`` for a how-to guide.
 """
 
 from core.factors.base import FactorBuilder
-from core.factors.builtin.momentum import MomentumFactor
-from core.factors.builtin.value import ReversalFactor
-from core.factors.builtin.volatility import VolatilityFactor
+from core.factors.builtin.momentum.momentum import MomentumFactor
+from core.factors.builtin.reversal.reversal import ReversalFactor
+from core.factors.builtin.volatility.volatility import VolatilityFactor
 
 __all__ = ["FactorBuilder", "MomentumFactor", "ReversalFactor", "VolatilityFactor"]

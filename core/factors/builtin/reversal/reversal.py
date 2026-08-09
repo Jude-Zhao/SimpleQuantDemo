@@ -1,4 +1,4 @@
-"""Value / reversal factor family."""
+"""Reversal factor implementation (分类: 反转)."""
 
 from __future__ import annotations
 
