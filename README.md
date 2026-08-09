@@ -8,7 +8,6 @@
 |------|------|
 | `core/` | 核心计算层：因子库（插件式注册 + 分类配置）、分析（IC/ICIR）、合成、优化器（等权/得分加权）、约束校验、回测引擎 |
 | `research/` | 研究脚本与回测入口（复用 core 层回测引擎） |
-| `trading/` | 交易信号模块 |
 | `webapp/` | FastAPI + SQLAlchemy + 静态前端：Web 因子看板 |
 | `tests/` | 全量 pytest 测试 |
 
