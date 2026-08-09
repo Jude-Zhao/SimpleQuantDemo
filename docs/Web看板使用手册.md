@@ -23,15 +23,18 @@ python run_webapp.py
 |------|------|
 | 统计卡片 | 展示标的池数量、因子数量、今日策略运行次数、系统状态 |
 | ETF 走势 | 下拉选择 ETF 查看收盘价走势折线图 |
-| 因子 IC 排名 | 横向条形图展示各因子最近 IC 均值 |
+| 因子 RankIC 排名 | 按分类分组展示各因子实例的 RankIC 均值/IR，右侧标注该分类等权得分的 RankIC |
 | 最近策略运行 | 最近 10 次策略运行记录列表 |
 
 ### 🧮 因子看板
 
-- 勾选一个或多个因子，选择调仓窗口（5/10/20 个交易日）后点击「计算因子」
+- 左侧因子列表**按分类分组**（动量 / 波动 / 反转 / 量能 / 其他），分组与实例统一由
+  `core/factors/builtin/factors.yaml` 配置，勾选一个或多个因子实例后点击「计算因子」
+- 点击某个因子显示详情卡片（类别、方向、公式、描述、实例、参数）
 - 每个因子展示 IC / RankIC / ICIR 概览卡片
 - IC / RankIC 时序图
 - 五分组年化收益柱状图
+- 相关性热力图支持**按实例**（因子间）与**按类**（分类得分间）两种粒度切换
 
 ### 🚀 策略运行
 
@@ -71,10 +74,20 @@ python run_webapp.py
 - **应用分类**：执行全部启用规则，预览分类结果表
 - **约束配置**：设置单票最小/最大权重、分类权重上下限（JSON 形式）
 
+### 📊 宏观数据
+
+- 日频 / 月频切换，查看宏观指标字段
+- 多选字段查看走势图，支持日期范围筛选
+- 数据表格展示
+- 顶部「同步数据」按钮全量同步宏观指标（删除旧数据后重新拉取）
+
 ### ⚙️ 设置
 
 - 查看当前数据源配置（主/备数据源、缓存开关、缓存天数）
 - 查看系统信息（版本、数据库连接状态、数据库地址）
+- **数据同步**：
+  - 「同步行情数据」：按日期范围全量同步 ETF 行情（后复权 hfq），带进度条
+  - 「同步宏观数据」：选择日频/月频后全量同步宏观指标，带进度条
 - 清空本地缓存
 
 ---
@@ -93,7 +106,8 @@ python run_webapp.py
 | 分类 | `GET/POST/PUT/DELETE /api/classifications/rules`、`POST /api/classifications/apply` |
 | 约束 | `GET/PUT /api/constraints` |
 | 策略 | `GET /api/strategies`、`POST /api/strategies/run`、`GET /api/strategies/runs`、`GET /api/strategies/runs/{id}`、`GET /api/strategies/runs/{id}/export` |
-| 行情 | `GET /api/market/etf/list`、`GET /api/market/etf/{sec_code}/kline` |
+| 行情 | `GET /api/market/etf/list`、`GET /api/market/etf/{sec_code}/kline`、`POST /api/market/sync/etf`、`GET /api/market/sync/{task_id}` |
+| 宏观 | `GET /api/macro/fields`、`GET /api/macro/daily`、`GET /api/macro/monthly`、`POST /api/macro/sync`、`GET /api/macro/sync/{task_id}` |
 | 首页 | `GET /api/dashboard/stats`、`/api/dashboard/etf-price`、`/api/dashboard/factor-ranking`、`/api/dashboard/recent-runs` |
 | 设置 | `GET /api/settings` |
 
