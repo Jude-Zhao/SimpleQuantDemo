@@ -65,7 +65,38 @@ function renderSettings(container) {
                 <p id="sync-result-text" class="text-muted mt-8" style="font-size:13px; display:none;"></p>
             </div>
             <p class="text-muted mt-8" style="font-size:13px;">
-                全量同步将删除指定日期范围内的旧数据并重新拉取，确保前复权数据最新。默认从 2021-01-04 同步至最新交易日。
+                全量同步将删除指定日期范围内的旧数据并重新拉取，确保后复权数据最新。默认从 2021-01-04 同步至最新交易日。
+            </p>
+
+            <div class="card-title" style="margin-top:20px;">宏观数据同步</div>
+            <div class="form-row" style="grid-template-columns: 1fr 1fr auto;">
+                <div class="form-group">
+                    <label>频率</label>
+                    <select id="macro-sync-freq" class="form-select">
+                        <option value="daily">日频</option>
+                        <option value="monthly">月频</option>
+                    </select>
+                </div>
+                <div class="form-group"></div>
+                <div class="form-group" style="align-self: end;">
+                    <button class="btn btn-primary" id="btn-sync-macro">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+                        同步宏观数据
+                    </button>
+                </div>
+            </div>
+            <div id="macro-sync-progress-wrap" style="display:none; margin-top:16px;">
+                <div class="flex-between" style="margin-bottom:6px;">
+                    <span id="macro-sync-status" style="font-size:13px;">准备中...</span>
+                    <span id="macro-sync-percent" style="font-size:13px; color: var(--text-muted);">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="macro-sync-fill" style="width: 0%;"></div>
+                </div>
+                <p id="macro-sync-result" class="text-muted mt-8" style="font-size:13px; display:none;"></p>
+            </div>
+            <p class="text-muted mt-8" style="font-size:13px;">
+                全量同步将删除旧数据并重新拉取宏观指标（约需 1-3 分钟）。
             </p>
         </div>
 
@@ -83,6 +114,7 @@ function renderSettings(container) {
 
     loadSettings();
     setupSyncButton();
+    setupMacroSyncButton();
     document.getElementById("btn-refresh-settings").addEventListener("click", loadSettings);
     document.getElementById("btn-clear-cache").addEventListener("click", async () => {
         const ok = await Components.confirmDialog("确定要清空本地行情缓存吗？", { okText: "清空", danger: true });
@@ -153,7 +185,7 @@ function setupSyncButton() {
         const endDate = endInput.value;
 
         const ok = await Components.confirmDialog(
-            `确定要全量同步行情数据吗？<br><br>范围：${startDate} ~ ${endDate}<br>将删除旧数据并重新拉取，确保前复权数据最新。`,
+            `确定要全量同步行情数据吗？<br><br>范围：${startDate} ~ ${endDate}<br>将删除旧数据并重新拉取，确保后复权数据最新。`,
             { okText: "开始同步", okClass: "btn-primary" }
         );
         if (!ok) return;
@@ -200,6 +232,67 @@ function setupSyncButton() {
         } finally {
             btn.disabled = false;
             btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg> 同步行情数据`;
+        }
+    });
+}
+
+function setupMacroSyncButton() {
+    const btn = document.getElementById("btn-sync-macro");
+    const wrap = document.getElementById("macro-sync-progress-wrap");
+    const fill = document.getElementById("macro-sync-fill");
+    const statusText = document.getElementById("macro-sync-status");
+    const percentText = document.getElementById("macro-sync-percent");
+    const resultText = document.getElementById("macro-sync-result");
+    const freqSelect = document.getElementById("macro-sync-freq");
+
+    btn.addEventListener("click", async () => {
+        const frequency = freqSelect.value;
+        const freqLabel = frequency === "daily" ? "日频" : "月频";
+
+        const ok = await Components.confirmDialog(
+            `确定要全量同步${freqLabel}宏观数据吗？<br><br>将删除旧数据并重新拉取（约需 1-3 分钟）。`,
+            { okText: "开始同步", okClass: "btn-primary" }
+        );
+        if (!ok) return;
+
+        btn.disabled = true;
+        btn.innerHTML = `<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg> 同步中...`;
+        wrap.style.display = "block";
+        resultText.style.display = "none";
+        fill.style.width = "0%";
+        percentText.textContent = "0%";
+        statusText.textContent = "准备中...";
+
+        try {
+            const task = await API.syncMacro({ frequency });
+            const final = await API.pollMacroSyncTask(task.task_id, (t) => {
+                statusText.textContent = t.message;
+                // Macro sync has no discrete progress; use 90% cap while running
+                const pct = t.status === "running" ? 90 : t.status === "completed" ? 100 : 0;
+                fill.style.width = pct + "%";
+                percentText.textContent = pct + "%";
+            }, 3000);
+
+            if (final.status === "completed") {
+                const r = final.result || {};
+                fill.style.width = "100%";
+                percentText.textContent = "100%";
+                statusText.textContent = final.message;
+                resultText.style.display = "block";
+                resultText.textContent = `✅ 同步完成，共 ${r.rows || 0} 条数据`;
+                Components.toast("宏观数据同步完成", "success");
+            } else {
+                resultText.style.display = "block";
+                resultText.textContent = `❌ 同步失败：${final.error || "未知错误"}`;
+                Components.toast("宏观数据同步失败", "error");
+            }
+        } catch (e) {
+            resultText.style.display = "block";
+            resultText.textContent = `❌ 同步失败：${e.message}`;
+            Components.toast(`同步失败: ${e.message}`, "error");
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg> 同步宏观数据`;
         }
     });
 }
