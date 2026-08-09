@@ -79,6 +79,10 @@ const API = {
         return this.request("/api/classifications/apply", { method: "POST" });
     },
 
+    async getClassifications() {
+        return this.request("/api/classifications");
+    },
+
     async getConstraints() {
         return this.request("/api/constraints");
     },
@@ -113,13 +117,17 @@ const API = {
      * @param {function} getStatus - async () => task object
      * @param {function} onProgress - callback with task object
      * @param {number} intervalMs - poll interval
+     * @param {function} [isDone] - (task) => boolean; defaults to the sync-task
+     *   terminal states (completed/failed). Callers like strategy runs pass a
+     *   custom predicate (success/failed).
      * @returns {Promise<object>} final task object
      */
-    async pollTask(getStatus, onProgress, intervalMs = 2000) {
+    async pollTask(getStatus, onProgress, intervalMs = 2000, isDone) {
+        const done = isDone || ((t) => t.status === "completed" || t.status === "failed");
         while (true) {
             const task = await getStatus();
             if (onProgress) onProgress(task);
-            if (task.status === "completed" || task.status === "failed") {
+            if (done(task)) {
                 return task;
             }
             await new Promise((r) => setTimeout(r, intervalMs));

@@ -276,7 +276,9 @@ async function applyClassification(silent = false) {
             nameMap = {};
         }
 
-        const result = await API.applyClassification();
+        // Explicit "应用分类" click re-runs the engine (POST); silent refresh
+        // (page load / after rule edits) only needs the read-only view (GET).
+        const result = silent ? await API.getClassifications() : await API.applyClassification();
         previewCache = result;
         renderClassificationPreview(preview, result);
         if (metaEl) metaEl.textContent = `共 ${result.length} 个标的 · ${new Date().toLocaleTimeString()}`;

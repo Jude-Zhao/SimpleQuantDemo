@@ -105,7 +105,72 @@ const Components = (() => {
         el.innerHTML = Utils.skeleton(lines);
     }
 
-    return { toast, modal, confirmDialog, skeleton };
+    /** Badge markup for a strategy run status (used by run-history tables). */
+    function runStatusBadge(status) {
+        const badgeMap = {
+            success: "badge-success",
+            failed: "badge-danger",
+            running: "badge-info",
+            pending: "badge-muted",
+        };
+        return `<span class="badge ${badgeMap[status] || "badge-muted"}">${Utils.escapeHtml(status)}</span>`;
+    }
+
+    /**
+     * Drive the shared macro-sync UI (confirm → disable button → progress →
+     * result) for both the macro page and the settings page.
+     * @param {object} o - { frequency, btn, wrap, fill, statusText, percentText, resultText }
+     */
+    async function runMacroSync({ frequency, btn, wrap, fill, statusText, percentText, resultText }) {
+        const freqLabel = frequency === "daily" ? "日频" : "月频";
+        const ok = await confirmDialog(
+            `确定要全量同步${freqLabel}宏观数据吗？<br><br>将删除旧数据并重新拉取（约需 1-3 分钟）。`,
+            { okText: "开始同步", okClass: "btn-primary" }
+        );
+        if (!ok) return;
+
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = `<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg> 同步中...`;
+        wrap.style.display = "block";
+        resultText.style.display = "none";
+        fill.style.width = "0%";
+        percentText.textContent = "0%";
+        statusText.textContent = "准备中...";
+
+        try {
+            const task = await API.syncMacro({ frequency });
+            const final = await API.pollMacroSyncTask(task.task_id, (t) => {
+                statusText.textContent = t.message;
+                // Macro sync has no discrete progress; use 90% cap while running.
+                const pct = t.status === "running" ? 90 : t.status === "completed" ? 100 : 0;
+                fill.style.width = pct + "%";
+                percentText.textContent = pct + "%";
+            }, 3000);
+
+            if (final.status === "completed") {
+                const r = final.result || {};
+                fill.style.width = "100%";
+                percentText.textContent = "100%";
+                statusText.textContent = final.message;
+                resultText.style.display = "block";
+                resultText.textContent = `✅ 同步完成，共 ${r.rows || 0} 条数据`;
+                return true;
+            }
+            resultText.style.display = "block";
+            resultText.textContent = `❌ 同步失败：${final.error || "未知错误"}`;
+            return false;
+        } catch (e) {
+            resultText.style.display = "block";
+            resultText.textContent = `❌ 同步失败：${e.message}`;
+            return false;
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    return { toast, modal, confirmDialog, skeleton, runStatusBadge, runMacroSync };
 })();
 
 window.Components = Components;

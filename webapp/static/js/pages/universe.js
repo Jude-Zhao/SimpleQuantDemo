@@ -79,7 +79,7 @@ async function loadUniverse() {
     try {
         const [items, classification] = await Promise.all([
             API.getUniverse(),
-            API.applyClassification().catch(() => []),
+            API.getClassifications().catch(() => []),
         ]);
         universeCache = items;
         classificationCache = {};

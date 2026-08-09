@@ -327,12 +327,12 @@ async function runStrategy() {
         }
 
         // Poll the background task until it reaches a terminal state.
-        let detail;
-        while (true) {
-            detail = await API.getRun(submitted.run_id);
-            if (detail.status === "success" || detail.status === "failed") break;
-            await new Promise((r) => setTimeout(r, 1000));
-        }
+        const detail = await API.pollTask(
+            () => API.getRun(submitted.run_id),
+            null,
+            1000,
+            (t) => t.status === "success" || t.status === "failed"
+        );
 
         setStep(3);
         resetButton();
@@ -385,17 +385,19 @@ function renderRunSummary(el, summary) {
     }
 
     const m = summary.metrics || {};
+    // Color only when the value is present; avoid mis-coloring missing metrics.
+    const signClass = (v) => (typeof v === "number" ? (v >= 0 ? "success-text" : "error-text") : "");
 
     el.innerHTML = `
         <div class="grid-12" style="gap:12px;">
             <div class="col-3 stat-card" style="padding:14px 16px;"><div class="stat-label">年化收益</div>
-                <div class="stat-value stat-value-sm ${m.annual_return >= 0 ? "success-text" : "error-text"}">${Utils.formatPct(m.annual_return)}</div></div>
+                <div class="stat-value stat-value-sm ${signClass(m.annual_return)}">${Utils.formatPct(m.annual_return)}</div></div>
             <div class="col-3 stat-card" style="padding:14px 16px;"><div class="stat-label">夏普比率</div>
                 <div class="stat-value stat-value-sm">${m.sharpe?.toFixed(3) ?? "-"}</div></div>
             <div class="col-3 stat-card" style="padding:14px 16px;"><div class="stat-label">最大回撤</div>
                 <div class="stat-value stat-value-sm error-text">${Utils.formatPct(m.max_drawdown)}</div></div>
             <div class="col-3 stat-card" style="padding:14px 16px;"><div class="stat-label">总收益</div>
-                <div class="stat-value stat-value-sm ${m.total_return >= 0 ? "success-text" : "error-text"}">${Utils.formatPct(m.total_return)}</div></div>
+                <div class="stat-value stat-value-sm ${signClass(m.total_return)}">${Utils.formatPct(m.total_return)}</div></div>
         </div>
         <div class="grid-12" style="margin-top:16px;gap:16px;">
             <div class="col-6" style="grid-column: span 6;">
@@ -489,12 +491,6 @@ async function loadRuns() {
             tbody.innerHTML = `<tr><td colspan="6" class="text-muted">暂无运行记录</td></tr>`;
             return;
         }
-        const badgeMap = {
-            success: "badge-success",
-            failed: "badge-danger",
-            running: "badge-info",
-            pending: "badge-muted",
-        };
         tbody.innerHTML = runs
             .map((r) => {
                 const paramSummary = r.params
@@ -507,7 +503,7 @@ async function loadRuns() {
                 <tr>
                     <td>${r.id}</td>
                     <td>${Utils.escapeHtml(r.strategy_type)}</td>
-                    <td><span class="badge ${badgeMap[r.status] || "badge-muted"}">${Utils.escapeHtml(r.status)}</span></td>
+                    <td>${Components.runStatusBadge(r.status)}</td>
                     <td class="text-muted" style="font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;" title="${Utils.escapeHtml(paramSummary)}">${Utils.escapeHtml(paramSummary)}</td>
                     <td class="text-muted" style="font-size:12px;">${Utils.formatDate(r.created_at)}</td>
                     <td>
@@ -534,7 +530,7 @@ async function viewRunDetail(id) {
                 <div style="font-size:13px;line-height:2;">
                     <div><span class="text-muted">策略:</span> ${Utils.escapeHtml(detail.strategy_type)}</div>
                     <div><span class="text-muted">状态:</span> <span class="badge badge-success">${Utils.escapeHtml(detail.status)}</span></div>
-                    <div><span class="text-muted">年化收益:</span> <span class="${m.annual_return >= 0 ? "success-text" : "error-text"}">${Utils.formatPct(m.annual_return)}</span></div>
+                    <div><span class="text-muted">年化收益:</span> <span class="${typeof m.annual_return === "number" ? (m.annual_return >= 0 ? "success-text" : "error-text") : ""}">${Utils.formatPct(m.annual_return)}</span></div>
                     <div><span class="text-muted">夏普:</span> ${m.sharpe?.toFixed(3) ?? "-"}</div>
                     <div><span class="text-muted">最大回撤:</span> ${Utils.formatPct(m.max_drawdown)}</div>
                     <div><span class="text-muted">创建时间:</span> ${Utils.formatDate(detail.created_at)}</div>

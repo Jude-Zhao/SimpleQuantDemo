@@ -260,17 +260,11 @@ function loadRecentRuns() {
                 tbody.innerHTML = `<tr><td colspan="4" class="text-muted">暂无运行记录</td></tr>`;
                 return;
             }
-            const badgeMap = {
-                success: "badge-success",
-                failed: "badge-danger",
-                running: "badge-info",
-                pending: "badge-muted",
-            };
             tbody.innerHTML = runs
                 .map((r) => `
                     <tr>
                         <td>${Utils.escapeHtml(r.strategy_type)}</td>
-                        <td><span class="badge ${badgeMap[r.status] || "badge-muted"}">${Utils.escapeHtml(r.status)}</span></td>
+                        <td>${Components.runStatusBadge(r.status)}</td>
                         <td class="${r.total_return !== null && r.total_return !== undefined ? (r.total_return >= 0 ? "success-text" : "error-text") : ""}">${Utils.formatPct(r.total_return)}</td>
                         <td class="text-muted" style="font-size:12px;">${Utils.formatDate(r.created_at)}</td>
                     </tr>`)

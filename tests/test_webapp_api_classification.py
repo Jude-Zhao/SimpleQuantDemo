@@ -113,6 +113,22 @@ def test_apply_classification():
     assert "510500.SH" in codes
 
 
+def test_get_classification_readonly():
+    """GET /api/classifications returns the read-only classification view."""
+    _delete_universe_item("510300.SH")
+    _add_universe_item("510300.SH", "沪深300ETF", {"category": "宽基"})
+
+    response = client.get("/api/classifications")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    codes = {item["sec_code"] for item in data}
+    assert "510300.SH" in codes
+    # Mirror of the apply endpoint payload shape.
+    sample = next(item for item in data if item["sec_code"] == "510300.SH")
+    assert isinstance(sample["categories"], dict)
+
+
 def test_get_constraints():
     response = client.get("/api/constraints")
     assert response.status_code == 200

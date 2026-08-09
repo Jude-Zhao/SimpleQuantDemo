@@ -246,54 +246,16 @@ function setupMacroSyncButton() {
     const freqSelect = document.getElementById("macro-sync-freq");
 
     btn.addEventListener("click", async () => {
-        const frequency = freqSelect.value;
-        const freqLabel = frequency === "daily" ? "日频" : "月频";
-
-        const ok = await Components.confirmDialog(
-            `确定要全量同步${freqLabel}宏观数据吗？<br><br>将删除旧数据并重新拉取（约需 1-3 分钟）。`,
-            { okText: "开始同步", okClass: "btn-primary" }
-        );
-        if (!ok) return;
-
-        btn.disabled = true;
-        btn.innerHTML = `<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg> 同步中...`;
-        wrap.style.display = "block";
-        resultText.style.display = "none";
-        fill.style.width = "0%";
-        percentText.textContent = "0%";
-        statusText.textContent = "准备中...";
-
-        try {
-            const task = await API.syncMacro({ frequency });
-            const final = await API.pollMacroSyncTask(task.task_id, (t) => {
-                statusText.textContent = t.message;
-                // Macro sync has no discrete progress; use 90% cap while running
-                const pct = t.status === "running" ? 90 : t.status === "completed" ? 100 : 0;
-                fill.style.width = pct + "%";
-                percentText.textContent = pct + "%";
-            }, 3000);
-
-            if (final.status === "completed") {
-                const r = final.result || {};
-                fill.style.width = "100%";
-                percentText.textContent = "100%";
-                statusText.textContent = final.message;
-                resultText.style.display = "block";
-                resultText.textContent = `✅ 同步完成，共 ${r.rows || 0} 条数据`;
-                Components.toast("宏观数据同步完成", "success");
-            } else {
-                resultText.style.display = "block";
-                resultText.textContent = `❌ 同步失败：${final.error || "未知错误"}`;
-                Components.toast("宏观数据同步失败", "error");
-            }
-        } catch (e) {
-            resultText.style.display = "block";
-            resultText.textContent = `❌ 同步失败：${e.message}`;
-            Components.toast(`同步失败: ${e.message}`, "error");
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36"/><path d="M21 3v6h-6"/></svg> 同步宏观数据`;
-        }
+        const ok = await Components.runMacroSync({
+            frequency: freqSelect.value,
+            btn,
+            wrap,
+            fill,
+            statusText,
+            percentText,
+            resultText,
+        });
+        Components.toast(ok ? "宏观数据同步完成" : "宏观数据同步失败", ok ? "success" : "error");
     });
 }
 

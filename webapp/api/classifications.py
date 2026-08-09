@@ -34,6 +34,17 @@ def get_rules(active_only: bool = True, db: Session = Depends(get_db)):
     return list_rules(db, active_only=active_only)
 
 
+@router.get("", response_model=list[ClassificationResult])
+def get_classification(db: Session = Depends(get_db)):
+    """Return the current classification of the universe (read-only).
+
+    ``classify_universe`` is a pure computation over rules and universe items
+    (no database writes), so this is a safe read-only view for pages that only
+    need to display the current assignment.
+    """
+    return classify_universe(db)
+
+
 @router.post("/rules", response_model=ClassificationRuleResponse)
 def create_rule_endpoint(rule: ClassificationRuleCreate, db: Session = Depends(get_db)):
     """Create a new classification rule."""
