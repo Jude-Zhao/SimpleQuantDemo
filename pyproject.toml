@@ -31,7 +31,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["core*", "research*", "trading*", "webapp*"]
+include = ["core*", "research*", "webapp*"]
 exclude = ["data_example*", "tests*", "docs*"]
 
 [tool.pytest.ini_options]
