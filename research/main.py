@@ -1,4 +1,15 @@
-"""Research pipeline entrypoint."""
+"""Research pipeline entrypoint.
+
+Pipeline:
+1. Load data from the shared SQLite database (same source as webapp).
+2. Build research factors from ``research/factor_config.yaml`` (research pool
+   first, core built-ins as fallback) and run independent factor evaluation
+   (IC / RankIC / ICIR / collinearity) — for research, not for driving the
+   portfolio.
+3. Combine category scores into the selected strategy composite (FAA or EAA).
+4. Compute target weights on rebalance dates with the core optimizers.
+5. Run the bt-based backtest and produce quantstats-based metrics + outputs.
+"""
 
 from __future__ import annotations
 
@@ -18,10 +29,13 @@ from core.analysis import (
 )
 from core.calendar import generate_rebalance_dates, get_trading_dates
 from core.data import SqliteDataSource
-from core.factors import MomentumFactor, VolatilityFactor
-from core.synthesis import ICIRWeightedSynthesizer
-from research.backtest import BacktestResult, run_backtest
+from core.factors.utils import pivot_price_field
+from core.optimization import EqualWeightOptimizer, ScoreWeightedOptimizer
+from core.synthesis import build_category_scores, eaa_composite, faa_composite
+from research.bt_engine import BTBacktestResult, run_bt_backtest
 from research.config import ResearchConfig, default_research_config
+from research.factors.config import load_research_categories
+from research.factors.registry import resolve_factor_class
 from research.visualization import plot_equity_curve, plot_factor_stats, plot_latest_weights
 
 
@@ -29,7 +43,7 @@ from research.visualization import plot_equity_curve, plot_factor_stats, plot_la
 class ResearchRunResult:
     """Outputs from one research pipeline run."""
 
-    backtest: BacktestResult
+    backtest: BTBacktestResult
     selected_factors: list[str]
     dropped_factors: list[str]
     warnings: list[str]
@@ -37,53 +51,63 @@ class ResearchRunResult:
     output_paths: dict[str, Path]
 
 
-def run_research(config: ResearchConfig) -> ResearchRunResult:
-    """Run the built-in local-data research pipeline."""
-    data_source = SqliteDataSource(db_path=config.db_path)
-    price_data, macro_data, universe = data_source.load_all(
-        start_date=config.start_date,
-        end_date=config.end_date,
-    )
+def _build_factor_panel(
+    price_data: pd.DataFrame,
+    universe: list[str],
+    categories: tuple,
+) -> dict[str, pd.DataFrame]:
+    """Build every research factor instance into a {name: matrix} panel."""
+    panel: dict[str, pd.DataFrame] = {}
+    for cat in categories:
+        if cat.is_empty:
+            continue
+        for inst in cat.factors:
+            cls = resolve_factor_class(inst.name)
+            if cls is None:
+                continue
+            builder = cls(**inst.params)
+            factor = builder.build(price_data, pd.DataFrame(), universe)
+            panel[builder.name] = factor
+    return panel
 
-    factor_panel = {
-        f"momentum_{config.momentum_window}": MomentumFactor(config.momentum_window).build(
-            price_data,
-            macro_data,
-            universe,
-        ),
-        f"volatility_{config.volatility_window}": VolatilityFactor(config.volatility_window).build(
-            price_data,
-            macro_data,
-            universe,
-        ),
-    }
+
+def _evaluate_factors(
+    price_data: pd.DataFrame,
+    factor_panel: dict[str, pd.DataFrame],
+    config: ResearchConfig,
+) -> tuple[dict[str, pd.Series], dict[str, pd.Series], dict[str, pd.Series], list[str]]:
+    """Run independent factor evaluation (IC / RankIC / ICIR / collinearity).
+
+    Returns (ic_data, rank_ic_data, icir_data, warnings). This is research
+    output only and does not drive the composite strategy.
+    """
     forward_returns = calculate_forward_returns(
         price_data,
         horizon=config.forward_return_horizon,
-        universe=universe,
+        universe=list(factor_panel[next(iter(factor_panel))].columns) if factor_panel else [],
     )
     ic_dates = generate_rebalance_dates(
         trading_dates=get_trading_dates(price_data).intersection(forward_returns.index),
-        rebalance_freq=config.backtest.rebalance_freq,  # type: ignore[arg-type]
-        rebalance_day=config.backtest.rebalance_day,
+        rebalance_freq=config.rebalance_freq,
+        rebalance_day=0,
     )
 
-    ic_data = {
-        factor_name: calculate_factor_ic(
+    ic_data: dict[str, pd.Series] = {}
+    rank_ic_data: dict[str, pd.Series] = {}
+    for factor_name, factor in factor_panel.items():
+        ic_series = calculate_factor_ic(
             factor=factor,
             forward_returns=forward_returns,
             min_observations=config.ic_min_observations,
-        ).loc[lambda series: series.index.intersection(ic_dates)]
-        for factor_name, factor in factor_panel.items()
-    }
-    rank_ic_data = {
-        factor_name: calculate_rank_ic(
+        )
+        ic_data[factor_name] = ic_series.loc[ic_series.index.intersection(ic_dates)]
+        rank_series = calculate_rank_ic(
             factor=factor,
             forward_returns=forward_returns,
             min_observations=config.ic_min_observations,
-        ).loc[lambda series: series.index.intersection(ic_dates)]
-        for factor_name, factor in factor_panel.items()
-    }
+        )
+        rank_ic_data[factor_name] = rank_series.loc[rank_series.index.intersection(ic_dates)]
+
     icir_data = {
         factor_name: calculate_icir(
             ic_series=ic_series,
@@ -92,31 +116,110 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         )
         for factor_name, ic_series in ic_data.items()
     }
-
     collinearity = analyze_collinearity(
         factor_panel=factor_panel,
         icir_data=icir_data,
         threshold=config.collinearity_threshold,
-        mode="select",
+        mode="warn",
         min_observations=config.ic_min_observations,
     )
-    selected_icir_data = {
-        factor_name: icir_data[factor_name]
-        for factor_name in collinearity.selected_factor_panel
+    return ic_data, rank_ic_data, icir_data, collinearity.warnings
+
+
+def _build_composite(
+    price_data: pd.DataFrame,
+    universe: list[str],
+    categories: tuple,
+    config: ResearchConfig,
+) -> pd.DataFrame:
+    """Build the FAA or EAA composite score matrix."""
+    category_scores = build_category_scores(
+        price_data,
+        universe,
+        categories,
+        resolver=resolve_factor_class,
+    )
+    if config.strategy_type == "eaa":
+        exponents = config.exponents or {
+            cat.key: 1.0 for cat in categories if not cat.is_empty
+        }
+        return eaa_composite(category_scores, exponents, config.beta)
+    class_weights = config.class_weights or {
+        cat.key: 1.0 for cat in categories if not cat.is_empty
     }
-    synthesized_scores = ICIRWeightedSynthesizer(
-        half_life_periods=config.half_life_periods,
-    ).synthesize(
-        factor_panel=collinearity.selected_factor_panel,
-        icir_data=selected_icir_data,
+    return faa_composite(category_scores, class_weights)
+
+
+def _build_target_weights(
+    close: pd.DataFrame,
+    scores: pd.DataFrame,
+    config: ResearchConfig,
+) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
+    """Compute target weights on rebalance dates and forward-fill."""
+    rebalance_dates = generate_rebalance_dates(
+        trading_dates=close.index,
+        rebalance_freq=config.rebalance_freq,
+        rebalance_day=0,
+    )
+    optimizer = (
+        ScoreWeightedOptimizer(
+            top_n=config.top_n,
+            max_weight=config.max_weight,
+            min_weight=config.min_weight,
+        )
+        if config.weight_mode == "score"
+        else EqualWeightOptimizer(
+            top_n=config.top_n,
+            max_weight=config.max_weight,
+            min_weight=config.min_weight,
+        )
+    )
+    target_weights = pd.DataFrame(
+        pd.NA, index=close.index, columns=close.columns, dtype="Float64"
+    )
+    for date in rebalance_dates:
+        if date not in scores.index:
+            continue
+        score_row = scores.loc[date]
+        if score_row.dropna().empty:
+            continue
+        target_weights.loc[date] = optimizer.optimize(score_row)
+
+    filled = target_weights.ffill().fillna(0.0).astype(float)
+    return filled, rebalance_dates
+
+
+def run_research(config: ResearchConfig) -> ResearchRunResult:
+    """Run the research pipeline."""
+    data_source = SqliteDataSource(db_path=config.db_path)
+    price_data, _macro_data, universe = data_source.load_all(
+        start_date=config.start_date,
+        end_date=config.end_date,
     )
 
-    backtest_result = run_backtest(
-        price_data=price_data,
-        factor_scores=synthesized_scores,
-        config=config.backtest,
+    categories = load_research_categories()
+    factor_panel = _build_factor_panel(price_data, universe, categories)
+
+    ic_data, rank_ic_data, icir_data, warnings = _evaluate_factors(
+        price_data, factor_panel, config
+    )
+
+    composite = _build_composite(price_data, universe, categories, config)
+
+    close = pivot_price_field(price_data, field="close", universe=universe)
+    close = close.loc[
+        close.index.intersection(composite.index), composite.columns
+    ].sort_index()
+    scores = composite.loc[close.index, close.columns].sort_index()
+
+    target_weights, _rebalance_dates = _build_target_weights(close, scores, config)
+    backtest_result = run_bt_backtest(
+        close=close,
+        target_weights=target_weights,
+        rebalance_freq=config.rebalance_freq,
     )
     summary = calculate_backtest_summary(backtest_result)
+
     output_paths = write_research_outputs(
         output_dir=config.output_dir,
         backtest_result=backtest_result,
@@ -124,32 +227,38 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         ic_data=ic_data,
         rank_ic_data=rank_ic_data,
         icir_data=icir_data,
-        synthesized_scores=synthesized_scores,
-        warnings=collinearity.warnings,
-        dropped_factors=collinearity.dropped_factors,
+        synthesized_scores=composite,
+        warnings=warnings,
+        dropped_factors=[],
     )
 
     return ResearchRunResult(
         backtest=backtest_result,
-        selected_factors=list(collinearity.selected_factor_panel),
-        dropped_factors=collinearity.dropped_factors,
-        warnings=collinearity.warnings,
+        selected_factors=list(factor_panel),
+        dropped_factors=[],
+        warnings=warnings,
         summary=summary,
         output_paths=output_paths,
     )
 
 
-def calculate_backtest_summary(result: BacktestResult, annualization: int = 252) -> pd.Series:
+def calculate_backtest_summary(
+    result: BTBacktestResult,
+    annualization: int = 252,
+) -> pd.Series:
     """Calculate performance metrics with quantstats.
 
-    Metric calculations (annual return, volatility, Sharpe, drawdown,
-    Sortino, Calmar, win rate) are delegated to ``quantstats``. The
-    turnover / cost / rebalance counts are backtest-specific and kept
-    from the engine result.
+    Annual return / volatility / Sharpe / drawdown / Sortino / Calmar / win
+    rate are delegated to ``quantstats``. Turnover and rebalance counts are
+    derived from the target-weight matrix held by ``result.weights``. The bt
+    engine is not configured with a commission model, so ``cost_sum`` is 0.
     """
     returns = result.daily_returns.astype(float)
     equity_curve = result.equity_curve.astype(float)
     total_return = equity_curve.iloc[-1] - 1.0
+    turnover = result.weights.diff().abs().sum(axis=1)
+    turnover_sum = float(turnover.sum())
+    rebalance_count = int((turnover > 0).sum())
 
     return pd.Series(
         {
@@ -161,9 +270,9 @@ def calculate_backtest_summary(result: BacktestResult, annualization: int = 252)
             "sortino": qs.stats.sortino(returns, periods=annualization),
             "calmar": qs.stats.calmar(returns, periods=annualization),
             "win_rate": qs.stats.win_rate(returns),
-            "turnover_sum": result.turnover.sum(),
-            "cost_sum": result.costs.sum(),
-            "rebalance_count": len(result.rebalance_dates),
+            "turnover_sum": turnover_sum,
+            "cost_sum": 0.0,
+            "rebalance_count": rebalance_count,
         },
         name="summary",
     )
@@ -171,7 +280,7 @@ def calculate_backtest_summary(result: BacktestResult, annualization: int = 252)
 
 def write_research_outputs(
     output_dir: Path,
-    backtest_result: BacktestResult,
+    backtest_result: BTBacktestResult,
     summary: pd.Series,
     ic_data: dict[str, pd.Series],
     rank_ic_data: dict[str, pd.Series],
@@ -194,9 +303,13 @@ def write_research_outputs(
         "latest_weights_plot": output_dir / "latest_weights.png",
     }
 
-    backtest_result.equity_curve.to_frame().to_csv(paths["equity_curve"], encoding="utf-8-sig")
+    backtest_result.equity_curve.reset_index().rename(
+        columns={"index": "date", "equity": "equity"}
+    ).to_csv(paths["equity_curve"], index=False, encoding="utf-8-sig")
     backtest_result.weights.to_csv(paths["weights"], encoding="utf-8-sig")
-    summary.to_frame("value").to_csv(paths["summary"], encoding="utf-8-sig")
+    summary.rename("value").reset_index().to_csv(
+        paths["summary"], index=False, encoding="utf-8-sig"
+    )
     synthesized_scores.to_csv(paths["synthesized_scores"], encoding="utf-8-sig")
 
     factor_stats = pd.concat(
@@ -209,8 +322,7 @@ def write_research_outputs(
     )
     factor_stats.to_csv(paths["factor_stats"], encoding="utf-8-sig")
 
-    warning_lines = []
-    warning_lines.extend(warnings)
+    warning_lines = list(warnings)
     if dropped_factors:
         warning_lines.append("Dropped factors: " + ", ".join(dropped_factors))
     paths["warnings"].write_text("\n".join(warning_lines), encoding="utf-8")
@@ -227,6 +339,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--strategy", choices=["faa", "eaa"], default=None)
+    parser.add_argument("--top-n", type=int, default=None)
+    parser.add_argument("--rebalance-freq", choices=["weekly", "monthly"], default=None)
     return parser
 
 
@@ -243,6 +358,16 @@ def main() -> None:
             start_date=args.start_date or config.start_date,
             end_date=args.end_date,
         )
+    if args.strategy:
+        config = replace(
+            config,
+            strategy_type=args.strategy,
+            weight_mode="score" if args.strategy == "eaa" else "equal",
+        )
+    if args.top_n is not None:
+        config = replace(config, top_n=args.top_n)
+    if args.rebalance_freq:
+        config = replace(config, rebalance_freq=args.rebalance_freq)
 
     result = run_research(config)
     print("Research pipeline completed.")

@@ -40,6 +40,21 @@ def test_run_research_writes_outputs(tmp_path: Path, test_db_path: Path) -> None
     assert len(factor_stats) < len(result.backtest.equity_curve)
 
 
+def test_run_research_eaa(tmp_path: Path, test_db_path: Path) -> None:
+    config = replace(
+        _research_config(tmp_path, test_db_path),
+        strategy_type="eaa",
+        weight_mode="score",
+    )
+
+    result = run_research(config)
+
+    assert result.selected_factors
+    assert result.backtest.equity_curve.dropna().iloc[-1] > 0
+    assert (tmp_path / "summary.csv").exists()
+    assert (tmp_path / "synthesized_scores.csv").exists()
+
+
 def test_calculate_backtest_summary_has_expected_fields(tmp_path: Path, test_db_path: Path) -> None:
     config = _research_config(tmp_path, test_db_path)
     result = run_research(config)

@@ -1,0 +1,37 @@
+# research 因子清单与分组配置
+#
+# 定义 research 研究策略使用的因子类别及其内部因子实例列表。
+# 格式与 core/factors/builtin/factors.yaml 对齐，便于研究后整体迁移到 core。
+#
+# - name: 因子注册名。解析顺序：research 因子池 -> core 内置 registry，
+#   因此可混合使用自定义研究因子（如 price_position）与 core 内置因子
+#   （momentum / volatility / reversal）。
+# - params: 因子构造参数。
+#
+# 类别之间由 research/config.py 的策略参数（class_weights / exponents）配置权重。
+
+categories:
+  momentum:
+    display_name: "动量"
+    factors:
+      - name: momentum
+        params: { window: 20 }
+      - name: momentum
+        params: { window: 60 }
+  volatility:
+    display_name: "波动"
+    factors:
+      - name: volatility
+        params: { window: 20 }
+      - name: volatility
+        params: { window: 60 }
+  reversal:
+    display_name: "反转"
+    factors:
+      - name: reversal
+        params: { window: 5 }
+  research_demo:
+    display_name: "研究示例"
+    factors:
+      - name: price_position
+        params: { window: 20 }
