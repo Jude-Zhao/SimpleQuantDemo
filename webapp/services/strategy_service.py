@@ -353,6 +353,9 @@ def _validate_portfolio(
 def _result_to_dict(result: BacktestResult) -> dict[str, Any]:
     """Serialize a BacktestResult into a JSON-safe dict."""
     return {
+        "metrics": _compute_metrics(
+            result.equity_curve, result.daily_returns
+        ).model_dump(),
         "equity_curve": {
             str(k.date()): float(v) for k, v in result.equity_curve.dropna().items()
         },

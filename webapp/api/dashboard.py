@@ -295,9 +295,17 @@ def get_recent_runs(limit: int = 10, db: Session = Depends(get_db)):
     for run in runs:
         total_return = None
         summary = run.result_summary or {}
-        metrics = None
-        # result_summary is stored as a raw dict; extract metrics if present.
-        total_return = summary.get("metrics", {}).get("total_return") if isinstance(summary.get("metrics"), dict) else None
+        # result_summary stored as a raw dict; extract metrics if present,
+        # otherwise fall back to deriving total return from the equity curve
+        # (for runs persisted before metrics was added to the summary).
+        raw_metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else None
+        if raw_metrics is not None:
+            total_return = raw_metrics.get("total_return")
+        else:
+            equity = summary.get("equity_curve") or {}
+            values = [v for v in (equity or {}).values() if isinstance(v, (int, float))]
+            if len(values) >= 2:
+                total_return = values[-1] / values[0] - 1
 
         result.append(RecentRunItem(
             id=run.id,

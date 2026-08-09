@@ -24,7 +24,7 @@ class StrategyRun(Base):
     universe_snapshot = Column(JSON, default=list)
     start_date = Column(String, nullable=True)
     end_date = Column(String, nullable=True)
-    result_summary = Column(JSON, default=dict)  # nav_series, metrics, weights, constraint_violations
+    result_summary = Column(JSON, default=dict)  # metrics, equity_curve, daily_returns, weights, turnover, costs, rebalance_dates
     status = Column(String, default="pending", index=True)  # pending / running / success / failed
     error_msg = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

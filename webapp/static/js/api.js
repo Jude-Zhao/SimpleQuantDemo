@@ -113,14 +113,6 @@ const API = {
         return this.request(`/api/strategies/runs/${id}/export`);
     },
 
-    // ── Market / Dashboard ─────────────────────────────────
-    async getMarketPrice(codes, start, end) {
-        const params = new URLSearchParams({ codes: codes.join(",") });
-        if (start) params.append("start", start);
-        if (end) params.append("end", end);
-        return this.request(`/api/market/price?${params.toString()}`);
-    },
-
     // ── Data Sync ──────────────────────────────────────────
     async syncEtf(options = {}) {
         return this.request("/api/market/sync/etf", { method: "POST", body: options });

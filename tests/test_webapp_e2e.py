@@ -82,6 +82,11 @@ def test_e2e_run_strategy_and_view_records():
         assert "metrics" in data
         assert "nav_series" in data
 
+        # Persisted detail must expose metrics (used by run-detail modal).
+        detail = client.get(f"/api/strategies/runs/{data['run_id']}")
+        assert detail.status_code == 200
+        assert "metrics" in detail.json()["result_summary"]
+
         # View run records
         runs = client.get("/api/strategies/runs?limit=5")
         assert runs.status_code == 200
