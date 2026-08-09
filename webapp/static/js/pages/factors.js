@@ -372,8 +372,7 @@ function renderCorrTab(panel) {
         try {
             const resp = await API.factorCorrelation({
                 granularity,
-                factorIds: lastResults.ids,
-                factorNames: [], // class granularity derives classes server-side
+                factorIds: lastResults.ids, // class granularity derives classes server-side
             });
             correlation.granularity = resp.granularity;
             correlation.labels = resp.labels;

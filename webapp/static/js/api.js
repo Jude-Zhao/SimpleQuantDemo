@@ -43,10 +43,10 @@ const API = {
         return this.request("/api/factors/compute", { method: "POST", body: payload });
     },
 
-    async factorCorrelation({ granularity = "instance", factorIds = [], factorNames = [] } = {}) {
+    async factorCorrelation({ granularity = "instance", factorIds = [] } = {}) {
         return this.request("/api/factors/correlation", {
             method: "POST",
-            body: { granularity, factor_ids: factorIds, factor_names: factorNames },
+            body: { granularity, factor_ids: factorIds },
         });
     },
 

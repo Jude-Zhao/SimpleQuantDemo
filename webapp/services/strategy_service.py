@@ -11,6 +11,7 @@ Orchestrates the full pipeline for each strategy type:
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -43,7 +44,7 @@ from webapp.services.universe_service import get_universe_codes, seed_default_un
 
 # Default date range for backtests when no explicit range is provided.
 DEFAULT_START = "2024-01-01"
-DEFAULT_END = "2026-12-31"
+DEFAULT_END = pd.Timestamp.now().strftime("%Y-%m-%d")
 
 _TOP_N_OPTIONS = [3, 5, 7, 9]
 
@@ -162,11 +163,20 @@ def _prune_history_runs(db: Session, max_runs: int) -> None:
         db.commit()
 
 
-def run_strategy(
+# Guards concurrent strategy submissions so only one run executes at a time.
+_strategy_run_lock = threading.Lock()
+
+
+def submit_strategy(
     db: Session,
     request: StrategyRunRequest,
 ) -> StrategyRunSummary:
-    """Execute a strategy and persist the run record."""
+    """Validate and submit a strategy run, then hand it off to a background thread.
+
+    Cheap validation (unknown strategy / empty universe) fails synchronously;
+    otherwise a ``pending`` run record is created and the pipeline runs in
+    background. Only one strategy task may be pending/running at a time.
+    """
     seed_default_universe(db)
     universe_codes = get_universe_codes(db)
     if not universe_codes:
@@ -190,19 +200,71 @@ def run_strategy(
     end_date = request.end_date or DEFAULT_END
     params = request.params or {}
 
-    run = StrategyRun(
-        strategy_type=strategy_type,
-        params=params,
-        universe_snapshot=universe_codes,
-        start_date=start_date,
-        end_date=end_date,
-        status="running",
-    )
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    with _strategy_run_lock:
+        running = (
+            db.query(StrategyRun)
+            .filter(StrategyRun.status.in_(["pending", "running"]))
+            .first()
+        )
+        if running is not None:
+            return StrategyRunSummary(
+                run_id=0,
+                strategy_type=strategy_type,
+                status="failed",
+                error_msg="已有策略任务运行中，请稍候再试",
+            )
 
+        run = StrategyRun(
+            strategy_type=strategy_type,
+            params=params,
+            universe_snapshot=universe_codes,
+            start_date=start_date,
+            end_date=end_date,
+            status="pending",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+    run_id = run.id
+    thread = threading.Thread(
+        target=_execute_run,
+        args=(run_id,),
+        daemon=True,
+    )
+    thread.start()
+
+    return StrategyRunSummary(
+        run_id=run_id,
+        strategy_type=strategy_type,
+        status="pending",
+        error_msg=None,
+    )
+
+
+def _execute_run(run_id: int) -> None:
+    """Background worker: execute a submitted strategy run and persist the result.
+
+    Uses a fresh session (SQLAlchemy sessions must not cross threads). Inputs
+    are re-read from the persisted run record so the worker is self-contained.
+    """
+    from webapp.models.database import SessionLocal
+
+    db = SessionLocal()
     try:
+        run = db.query(StrategyRun).filter(StrategyRun.id == run_id).first()
+        if run is None:
+            return
+
+        run.status = "running"
+        db.commit()
+
+        strategy_type = run.strategy_type
+        params = run.params or {}
+        start_date = run.start_date or DEFAULT_START
+        end_date = run.end_date or DEFAULT_END
+        universe_codes = run.universe_snapshot or []
+
         # Fetch data
         price_data = get_etf_price(db, universe_codes, start_date, end_date)
         if price_data.empty:
@@ -224,27 +286,22 @@ def run_strategy(
 
         # Persist success
         run.status = "success"
-        run.result_summary = _result_to_dict(result)
+        run.result_summary = _result_to_dict(result, violations)
         run.completed_at = datetime.utcnow()
         db.commit()
-
-        return _to_summary(run.id, strategy_type, result, violations)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
-        run = db.query(StrategyRun).filter(StrategyRun.id == run.id).first()
+        run = db.query(StrategyRun).filter(StrategyRun.id == run_id).first()
         if run:
             run.status = "failed"
             run.error_msg = str(exc)
             run.completed_at = datetime.utcnow()
             db.commit()
-        return StrategyRunSummary(
-            run_id=run.id if run else 0,
-            strategy_type=strategy_type,
-            status="failed",
-            error_msg=str(exc),
-        )
     finally:
-        _prune_history_runs(db, get_config().strategy.max_history_runs)
+        try:
+            _prune_history_runs(db, get_config().strategy.max_history_runs)
+        finally:
+            db.close()
 
 
 def _build_classifications(db: Session) -> dict[str, dict[str, str]]:
@@ -350,12 +407,23 @@ def _validate_portfolio(
 
 # ── Result conversion ─────────────────────────────────────────────────
 
-def _result_to_dict(result: BacktestResult) -> dict[str, Any]:
+def _result_to_dict(
+    result: BacktestResult,
+    violations: list[ConstraintViolationItem] | None = None,
+) -> dict[str, Any]:
     """Serialize a BacktestResult into a JSON-safe dict."""
     return {
         "metrics": _compute_metrics(
             result.equity_curve, result.daily_returns
         ).model_dump(),
+        "constraint_violations": [
+            {
+                "constraint": v.constraint,
+                "message": v.message,
+                "severity": v.severity,
+            }
+            for v in (violations or [])
+        ],
         "equity_curve": {
             str(k.date()): float(v) for k, v in result.equity_curve.dropna().items()
         },
@@ -379,38 +447,6 @@ def _result_to_dict(result: BacktestResult) -> dict[str, Any]:
             str(d.date()) for d in result.rebalance_dates
         ],
     }
-
-
-def _to_summary(
-    run_id: int,
-    strategy_type: str,
-    result: BacktestResult,
-    violations: list[ConstraintViolationItem],
-) -> StrategyRunSummary:
-    """Convert a backtest result into an API summary."""
-    equity = result.equity_curve
-    daily_returns = result.daily_returns
-
-    metrics = _compute_metrics(equity, daily_returns)
-
-    # Latest weights
-    latest_weights = result.weights.iloc[-1].dropna()
-    latest_weights = latest_weights[latest_weights > 0]
-    weights_dict = {
-        str(k): float(v) for k, v in latest_weights.items()
-    }
-
-    return StrategyRunSummary(
-        run_id=run_id,
-        strategy_type=strategy_type,
-        status="success",
-        metrics=metrics,
-        nav_series={
-            str(k.date()): float(v) for k, v in equity.dropna().items()
-        },
-        weights=weights_dict,
-        constraint_violations=violations,
-    )
 
 
 def _compute_metrics(equity: pd.Series, daily_returns: pd.Series) -> StrategyMetrics:
@@ -461,3 +497,27 @@ def list_runs(db: Session, limit: int = 20) -> list[StrategyRun]:
 def get_run(db: Session, run_id: int) -> StrategyRun | None:
     """Get a single run record by ID."""
     return db.query(StrategyRun).filter(StrategyRun.id == run_id).first()
+
+
+def cleanup_orphaned_runs() -> None:
+    """Mark leftover pending/running runs as failed.
+
+    Called at startup so a process restart does not leave strategy tasks stuck
+    in a non-terminal state.
+    """
+    from webapp.models.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        orphans = (
+            db.query(StrategyRun)
+            .filter(StrategyRun.status.in_(["pending", "running"]))
+            .all()
+        )
+        for run in orphans:
+            run.status = "failed"
+            run.error_msg = "服务重启，任务中断"
+            run.completed_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()

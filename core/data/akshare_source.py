@@ -1,8 +1,9 @@
 """AkShare data source adapter for ETF price and macro data.
 
-ETF price uses fund_etf_hist_sina (Sina source, stable and long history).
-Macro data adapters are implemented field by field since AkShare function
-signatures vary by endpoint and version.
+ETF price uses the Tencent fqkline 后复权(hfq) endpoint as the primary source
+(with Sina ``fund_etf_hist_sina`` as fallback). Macro data adapters are
+implemented field by field since AkShare function signatures vary by endpoint
+and version.
 """
 
 from __future__ import annotations
@@ -38,8 +39,9 @@ def ensure_akshare_available():
 class AkShareDataSource(DataSource):
     """AkShare data source implementing the DataSource interface.
 
-    Provides ETF daily OHLCV data via fund_etf_hist_sina (Sina backend).
-    Macro factors are fetched field-by-field with explicit adapters.
+    Provides ETF daily OHLCV data via the Tencent fqkline 后复权 endpoint
+    (primary), falling back to Sina ``fund_etf_hist_sina``. Macro factors are
+    fetched field-by-field with explicit adapters.
     """
 
     def __init__(self) -> None:
@@ -68,7 +70,7 @@ class AkShareDataSource(DataSource):
         end_date: str | pd.Timestamp | None = None,
         period: str = "daily",
     ) -> pd.DataFrame:
-        """Fetch ETF price data for specific codes from AkShare (Sina source).
+        """Fetch ETF price data for specific codes from AkShare.
 
         Args:
             sec_codes: list of ETF codes like ["510300.SH", "159915.SZ"]
@@ -86,7 +88,7 @@ class AkShareDataSource(DataSource):
 
         all_frames: list[pd.DataFrame] = []
         for sec_code in sec_codes:
-            # Prefer Eastmoney with 后复权(hfq) + adj_factor; fall back to Sina.
+            # Prefer Tencent 后复权(hfq) + adj_factor; fall back to Sina.
             df = self._fetch_hfq_price(ak, sec_code, start_date, end_date)
             if df.empty:
                 df = self._fetch_sina_price(ak, sec_code, start_date, end_date)
@@ -135,8 +137,9 @@ class AkShareDataSource(DataSource):
             })
             df["sec"] = sec_code
             df["date"] = pd.to_datetime(df["date"])
+            df["source"] = "akshare"
             df = self._filter_by_date(df, start_date, end_date)
-            return df[["date", "sec", "open", "high", "low", "close", "volume", "amount"]]
+            return df[["date", "sec", "open", "high", "low", "close", "volume", "amount", "source"]]
         except Exception:
             return pd.DataFrame()
 
@@ -182,6 +185,7 @@ class AkShareDataSource(DataSource):
         else:
             df["adj_factor"] = float("nan")
 
+        df["source"] = "akshare"
         return self._filter_by_date(df, start_date, end_date)
 
     @classmethod

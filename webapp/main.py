@@ -15,6 +15,7 @@ from webapp.api.strategies import router as strategies_router
 from webapp.api.universe import router as universe_router
 from webapp.config import get_config
 from webapp.models.database import init_db
+from webapp.services.strategy_service import cleanup_orphaned_runs
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -36,6 +37,8 @@ def create_app() -> FastAPI:
 
     # 初始化数据库
     init_db()
+    # 清理上次进程遗留的策略任务（避免重启后卡在 pending/running）
+    cleanup_orphaned_runs()
 
     app = FastAPI(title="SimpleQuant Web Dashboard", version="1.0.0")
 

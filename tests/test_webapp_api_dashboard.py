@@ -22,23 +22,6 @@ def test_dashboard_stats():
     assert data["factor_count"] >= 3
 
 
-def test_dashboard_etf_price_missing_codes():
-    response = client.get("/api/dashboard/etf-price")
-    assert response.status_code == 422  # requires codes
-
-
-def test_dashboard_etf_price_with_codes():
-    response = client.get("/api/dashboard/etf-price?codes=510300.SH,510500.SH")
-    assert response.status_code == 200
-    data = response.json()
-    assert isinstance(data, list)
-    # May be empty if no cached data, but must not error
-    for item in data:
-        assert "date" in item
-        assert "sec_code" in item
-        assert "close" in item
-
-
 def test_dashboard_recent_runs():
     response = client.get("/api/dashboard/recent-runs?limit=5")
     assert response.status_code == 200

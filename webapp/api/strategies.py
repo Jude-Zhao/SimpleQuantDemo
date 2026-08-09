@@ -19,7 +19,7 @@ from webapp.services.strategy_service import (
     get_strategy_meta,
     list_runs,
     list_strategies,
-    run_strategy,
+    submit_strategy,
 )
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
@@ -33,8 +33,13 @@ def get_strategies():
 
 @router.post("/run", response_model=StrategyRunSummary)
 def run_strategy_endpoint(req: StrategyRunRequest, db: Session = Depends(get_db)):
-    """Run a strategy synchronously and return the summary."""
-    return run_strategy(db, req)
+    """Submit a strategy run and return the task status.
+
+    Validation failures (unknown strategy / empty universe / another run in
+    progress) return immediately; otherwise a pending run is created and
+    executed in the background. Poll GET /runs/{run_id} for the result.
+    """
+    return submit_strategy(db, req)
 
 
 @router.get("/runs", response_model=list[StrategyRunListItem])

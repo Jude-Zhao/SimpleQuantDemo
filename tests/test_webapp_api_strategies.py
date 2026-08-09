@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from webapp.main import app
+from webapp.models.database import SessionLocal
+from webapp.models.strategy_run import StrategyRun
 
 client = TestClient(app)
 
@@ -50,3 +52,30 @@ def test_get_run_detail_not_found():
 def test_export_run_not_found():
     response = client.get("/api/strategies/runs/999999/export")
     assert response.status_code == 404
+
+
+def test_concurrent_run_rejected():
+    """A second submission is rejected while one run is pending/running."""
+    db = SessionLocal()
+    try:
+        db.add(StrategyRun(strategy_type="faa", params={}, status="running"))
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        response = client.post("/api/strategies/run", json={
+            "strategy_type": "faa",
+            "params": {"top_n": 5},
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "failed"
+        assert "运行中" in data["error_msg"]
+    finally:
+        db = SessionLocal()
+        try:
+            db.query(StrategyRun).filter(StrategyRun.status == "running").delete()
+            db.commit()
+        finally:
+            db.close()

@@ -19,7 +19,6 @@ class FactorCorrelationRequest(BaseModel):
 
     granularity: Literal["instance", "class"] = "instance"
     factor_ids: list[str] = Field(default_factory=list)
-    factor_names: list[str] = Field(default_factory=list)
 
 
 class FactorCorrelationResponse(BaseModel):

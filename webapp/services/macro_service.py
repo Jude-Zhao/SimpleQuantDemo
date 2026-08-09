@@ -249,13 +249,10 @@ def _sync_daily(db: Session, task: MacroSyncTask, start_date: str | None, end_da
     deleted = db.query(MacroDaily).delete()
     db.commit()
 
-    # Write new rows
+    # Write new rows (table was just emptied, no per-row dedup needed).
     count = 0
     for idx, row in df.iterrows():
         trade_date = pd.Timestamp(idx).strftime("%Y-%m-%d")
-        existing = db.query(MacroDaily).filter_by(trade_date=trade_date).first()
-        if existing:
-            continue
 
         record = MacroDaily(trade_date=trade_date)
         for f in DAILY_FIELDS:
@@ -328,7 +325,7 @@ def _sync_monthly(db: Session, task: MacroSyncTask, start_date: str | None, end_
         count += 1
 
     db.commit()
-    task.result = {"rows": count, "fields": sorted(data.keys())[:5], "total_months": len(data)}
+    task.result = {"rows": count, "months": sorted(data.keys())[:5], "total_months": len(data)}
 
 
 def _fetch_ak_monthly_series(ak, df: pd.DataFrame, indicator_name: str) -> pd.Series:

@@ -1,7 +1,6 @@
 /* Strategy execution page — step wizard with param sliders and run state machine */
 
 let strategyMetas = [];
-let factorList = [];
 let constraintsCache = null;
 
 function renderStrategies(container) {
@@ -131,16 +130,6 @@ async function loadStrategies() {
     }
 }
 
-async function loadFactors() {
-    if (factorList.length) return factorList;
-    try {
-        factorList = await API.listFactors();
-    } catch (e) {
-        factorList = [];
-    }
-    return factorList;
-}
-
 async function loadConstraints() {
     try {
         constraintsCache = await API.getConstraints();
@@ -189,13 +178,7 @@ async function renderParamForm(strategyName) {
 
     let html = `<div class="form-row">`;
     meta.params_schema.forEach((p) => {
-        if (p.type === "multi_factor") {
-            html += `
-                <div class="form-group" style="grid-column: 1 / -1;">
-                    <label>${Utils.escapeHtml(p.label)}</label>
-                    <div class="btn-group" id="param-${p.name}"></div>
-                </div>`;
-        } else if (p.type === "json") {
+        if (p.type === "json") {
             html += `
                 <div class="form-group" style="grid-column: 1 / -1;">
                     <label>${Utils.escapeHtml(p.label)}</label>
@@ -287,50 +270,6 @@ async function renderParamForm(strategyName) {
             r.addEventListener("input", sync);
         });
     });
-
-    if (meta.params_schema.some((p) => p.type === "multi_factor")) {
-        await renderFactorMultiSelect();
-    }
-    updateRunButton();
-}
-
-async function renderFactorMultiSelect() {
-    const meta = strategyMetas.find((s) => s.name === currentStrategyName());
-    const p = meta?.params_schema.find((p) => p.type === "multi_factor");
-    if (!p) return;
-    const box = document.getElementById(`param-${p.name}`);
-    if (!box) return;
-    const factors = await loadFactors();
-    box.innerHTML = factors
-        .map(
-            (f, i) => `
-            <label class="factor-chip ${i < 3 ? "checked" : ""}" style="display:inline-flex;">
-                <input type="checkbox" value="${f.name}" ${i < 3 ? "checked" : ""} />
-                ${Utils.escapeHtml(f.display_name || f.name)}
-            </label>`
-        )
-        .join("");
-    box.querySelectorAll(".factor-chip").forEach((chip) => {
-        const checkbox = chip.querySelector("input");
-        checkbox.addEventListener("change", () => {
-            chip.classList.toggle("checked", checkbox.checked);
-            updateRunButton();
-        });
-    });
-    updateRunButton();
-}
-
-function updateRunButton() {
-    const btn = document.getElementById("btn-run-strategy");
-    if (!btn) return;
-    const meta = strategyMetas.find((s) => s.name === currentStrategyName());
-    const multiFactorParam = meta?.params_schema.find((p) => p.type === "multi_factor");
-    if (!multiFactorParam) {
-        btn.disabled = false;
-        return;
-    }
-    const checked = document.querySelectorAll(`#param-${multiFactorParam.name} input:checked`).length;
-    btn.disabled = checked === 0;
 }
 
 function setStep(n) {
@@ -349,10 +288,7 @@ async function runStrategy() {
     meta.params_schema.forEach((p) => {
         const rangeEl = document.getElementById(`param-${p.name}-range`);
         const el = document.getElementById(`param-${p.name}`);
-        if (p.type === "multi_factor") {
-            const checked = document.querySelectorAll(`#param-${p.name} input:checked`);
-            params[p.name] = Array.from(checked).map((c) => c.value);
-        } else if (p.type === "json") {
+        if (p.type === "json") {
             try {
                 params[p.name] = JSON.parse(el?.value || "[]");
             } catch (e) {
@@ -387,18 +323,51 @@ async function runStrategy() {
     constraintPanel.innerHTML = `<div class="loading" style="padding:16px;"><div class="spinner"></div>校验约束中...</div>`;
     resultEl.innerHTML = `<div class="loading"><div class="spinner"></div>策略运行中，请稍候...</div>`;
 
-    try {
-        const summary = await API.runStrategy({ strategy_type: type, params });
-        setStep(3);
+    const resetButton = () => {
         btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9V3z"/></svg>运行策略`;
         btn.disabled = false;
+    };
+
+    try {
+        // Submit the strategy run; validation failures return immediately.
+        const submitted = await API.runStrategy({ strategy_type: type, params });
+        if (submitted.status === "failed") {
+            setStep(1);
+            resetButton();
+            constraintPanel.innerHTML = renderConstraintsHtml();
+            resultEl.innerHTML = `<div class="alert alert-error">运行失败: ${Utils.escapeHtml(submitted.error_msg || "未知错误")}</div>`;
+            return;
+        }
+
+        // Poll the background task until it reaches a terminal state.
+        let detail;
+        while (true) {
+            detail = await API.getRun(submitted.run_id);
+            if (detail.status === "success" || detail.status === "failed") break;
+            await new Promise((r) => setTimeout(r, 1000));
+        }
+
+        setStep(3);
+        resetButton();
+
+        // Rebuild the summary-shaped object from the persisted result_summary.
+        const rs = detail.result_summary || {};
+        const weights = rs.weights || {};
+        const wDates = Object.keys(weights);
+        const summary = {
+            status: detail.status,
+            error_msg: detail.error_msg,
+            metrics: rs.metrics || {},
+            nav_series: rs.equity_curve || {},
+            weights: wDates.length ? weights[wDates[wDates.length - 1]] : {},
+            constraint_violations: rs.constraint_violations || [],
+        };
         renderRunSummary(resultEl, summary);
         renderConstraintCheck(constraintPanel, summary);
         loadRuns();
     } catch (e) {
         setStep(1);
-        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9V3z"/></svg>运行策略`;
-        btn.disabled = false;
+        resetButton();
         constraintPanel.innerHTML = renderConstraintsHtml();
         resultEl.innerHTML = `<div class="alert alert-error">运行失败: ${Utils.escapeHtml(e.message)}</div>`;
     }

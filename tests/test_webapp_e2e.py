@@ -13,6 +13,8 @@ Uses FastAPI TestClient to exercise the full workflow:
 
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
 from webapp.main import app
@@ -63,7 +65,7 @@ def test_e2e_compute_factor():
 
 
 def test_e2e_run_strategy_and_view_records():
-    """4. Run eaa strategy, 5. view run records."""
+    """4. Run eaa strategy (async), 5. view run records."""
     response = client.post("/api/strategies/run", json={
         "strategy_type": "eaa",
         "params": {
@@ -75,27 +77,38 @@ def test_e2e_run_strategy_and_view_records():
     })
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] in ("success", "failed")
+    assert data["status"] in ("pending", "failed")
 
-    if data["status"] == "success":
-        assert data["run_id"] > 0
-        assert "metrics" in data
-        assert "nav_series" in data
+    if data["status"] == "failed":
+        return  # validation/concurrency failure; not the success path
 
-        # Persisted detail must expose metrics (used by run-detail modal).
-        detail = client.get(f"/api/strategies/runs/{data['run_id']}")
-        assert detail.status_code == 200
-        assert "metrics" in detail.json()["result_summary"]
+    run_id = data["run_id"]
+    assert run_id > 0
 
-        # View run records
-        runs = client.get("/api/strategies/runs?limit=5")
-        assert runs.status_code == 200
-        assert len(runs.json()) >= 1
+    # Poll the background task until it reaches a terminal state.
+    detail = None
+    for _ in range(120):
+        detail = client.get(f"/api/strategies/runs/{run_id}").json()
+        if detail["status"] in ("success", "failed"):
+            break
+        time.sleep(0.5)
+    assert detail is not None, "strategy run did not finish in time"
+    assert detail["status"] == "success", detail.get("error_msg")
 
-        # Export NAV
-        export = client.get(f"/api/strategies/runs/{data['run_id']}/export")
-        assert export.status_code == 200
-        assert "csv" in export.json()
+    # Persisted detail must expose metrics and constraint violations.
+    rs = detail["result_summary"]
+    assert "metrics" in rs
+    assert "constraint_violations" in rs
+
+    # View run records
+    runs = client.get("/api/strategies/runs?limit=5")
+    assert runs.status_code == 200
+    assert len(runs.json()) >= 1
+
+    # Export NAV
+    export = client.get(f"/api/strategies/runs/{run_id}/export")
+    assert export.status_code == 200
+    assert "csv" in export.json()
 
 
 def test_e2e_classification_rules_and_apply():

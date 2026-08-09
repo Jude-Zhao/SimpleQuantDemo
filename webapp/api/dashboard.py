@@ -39,12 +39,6 @@ class DashboardStats(BaseModel):
     system_status: str
 
 
-class PricePoint(BaseModel):
-    date: str
-    sec_code: str
-    close: float
-
-
 class FactorInstanceRanking(BaseModel):
     name: str
     params: dict
@@ -99,6 +93,8 @@ def get_stats(db: Session = Depends(get_db)):
         len(cat.factors) for cat in list_factor_categories_meta()
     )
 
+    # "今日"按 UTC 自然日口径统计，与 StrategyRun.created_at 落库(UTC)一致，
+    # 避免 naive datetime 与本地时区比较产生跨天偏差。
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     run_count_today = (
         db.query(StrategyRun)
@@ -112,32 +108,6 @@ def get_stats(db: Session = Depends(get_db)):
         run_count_today=run_count_today,
         system_status="ok",
     )
-
-
-@router.get("/etf-price", response_model=list[PricePoint])
-def get_etf_price_series(
-    codes: str = Query(..., description="Comma-separated ETF codes"),
-    start: str | None = None,
-    end: str | None = None,
-    db: Session = Depends(get_db),
-):
-    """Get close-price series for multiple ETFs (long format)."""
-    sec_codes = [c.strip() for c in codes.split(",") if c.strip()]
-    if not sec_codes:
-        return []
-
-    df = get_etf_price(db, sec_codes, start or DEFAULT_START, end or DEFAULT_END)
-    if df.empty:
-        return []
-
-    points = []
-    for _, row in df.iterrows():
-        points.append(PricePoint(
-            date=str(pd.to_datetime(row["date"]).date()),
-            sec_code=str(row["sec"]),
-            close=float(row["close"]),
-        ))
-    return points
 
 
 @router.get("/factor-ranking", response_model=list[FactorRankingItem])

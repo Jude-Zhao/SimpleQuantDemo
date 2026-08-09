@@ -21,8 +21,8 @@ _config = get_config()
 def _get_primary_source():
     """Get primary data source instance.
 
-    Uses AkShare as primary for ETF data (Sina backend, stable long history).
-    Falls back to Baostock if AkShare is unavailable.
+    Uses AkShare as primary for ETF data (Tencent 后复权 hfq, stable long
+    history). Falls back to Baostock if AkShare is unavailable.
     """
     try:
         from core.data.akshare_source import AkShareDataSource, ensure_akshare_available
