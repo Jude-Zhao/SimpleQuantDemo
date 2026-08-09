@@ -55,6 +55,8 @@
 
     async function render(route) {
         const r = ROUTES[route] || ROUTES.dashboard;
+        // Release charts bound to the outgoing page before replacing its DOM.
+        Charts.clearAll();
         container.innerHTML = `<div class="loading"><div class="spinner"></div>加载中...</div>`;
         try {
             const renderFn = await loadScript(route);
@@ -250,7 +252,6 @@
                 renderResults("");
             },
         });
-        searchModal = { overlay: searchModal.overlay, close: searchModal.close };
 
         function closeSearch() {
             if (searchModal) {

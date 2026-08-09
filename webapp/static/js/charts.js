@@ -182,9 +182,15 @@ const Charts = (() => {
         registry.delete(el);
     }
 
+    /** Tear down every tracked chart. Called when the SPA swaps page content so
+     *  charts tied to the old DOM (and their ResizeObservers) are released. */
+    function clearAll() {
+        registry.forEach((entry, el) => destroy(el));
+    }
+
     window.addEventListener("themechange", () => refresh());
 
-    return { render, refresh, destroy, palette, semanticColor, themeName, baseOption };
+    return { render, refresh, destroy, clearAll, palette, semanticColor, themeName, baseOption };
 })();
 
 window.Charts = Charts;

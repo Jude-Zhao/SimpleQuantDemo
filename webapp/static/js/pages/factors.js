@@ -203,7 +203,6 @@ async function runSelectedFactors() {
         }
 
         lastResults = { results, correlation, ids, horizon };
-        document.querySelector('#analysis-tabs .tab-pill[data-tab="ic"]').classList.add("active");
         document.querySelectorAll("#analysis-tabs .tab-pill").forEach((t) => {
             t.classList.toggle("active", t.dataset.tab === "ic");
         });

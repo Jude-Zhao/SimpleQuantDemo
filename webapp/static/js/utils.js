@@ -1,32 +1,6 @@
-/* Utility helpers: throttle, debounce, formatting, DOM helpers */
+/* Utility helpers: formatting, DOM helpers */
 
 const Utils = (() => {
-    function throttle(fn, wait) {
-        let last = 0;
-        let timer = null;
-        return function (...args) {
-            const now = Date.now();
-            if (now - last >= wait) {
-                last = now;
-                fn.apply(this, args);
-            } else if (!timer) {
-                timer = setTimeout(() => {
-                    timer = null;
-                    last = Date.now();
-                    fn.apply(this, args);
-                }, wait - (now - last));
-            }
-        };
-    }
-
-    function debounce(fn, wait) {
-        let timer = null;
-        return function (...args) {
-            clearTimeout(timer);
-            timer = setTimeout(() => fn.apply(this, args), wait);
-        };
-    }
-
     function escapeHtml(str) {
         if (str === null || str === undefined) return "";
         return String(str)
@@ -71,13 +45,6 @@ const Utils = (() => {
         requestAnimationFrame(step);
     }
 
-    function kebabToTitle(str) {
-        return String(str || "")
-            .split("-")
-            .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-            .join(" ");
-    }
-
     /** Build a skeleton screen placeholder. */
     function skeleton(lines = 4) {
         let html = `<div class="skeleton">`;
@@ -90,14 +57,11 @@ const Utils = (() => {
     }
 
     return {
-        throttle,
-        debounce,
         escapeHtml,
         formatPct,
         formatNum,
         formatDate,
         animateNumber,
-        kebabToTitle,
         skeleton,
     };
 })();

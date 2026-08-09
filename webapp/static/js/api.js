@@ -29,11 +29,6 @@ const API = {
         return resp.json();
     },
 
-    // ── Health ─────────────────────────────────────────────
-    async health() {
-        return this.request("/api/health");
-    },
-
     // ── Factors ────────────────────────────────────────────
     async listFactors() {
         return this.request("/api/factors");
@@ -113,6 +108,24 @@ const API = {
         return this.request(`/api/strategies/runs/${id}/export`);
     },
 
+    /**
+     * Poll until a task reaches a terminal state.
+     * @param {function} getStatus - async () => task object
+     * @param {function} onProgress - callback with task object
+     * @param {number} intervalMs - poll interval
+     * @returns {Promise<object>} final task object
+     */
+    async pollTask(getStatus, onProgress, intervalMs = 2000) {
+        while (true) {
+            const task = await getStatus();
+            if (onProgress) onProgress(task);
+            if (task.status === "completed" || task.status === "failed") {
+                return task;
+            }
+            await new Promise((r) => setTimeout(r, intervalMs));
+        }
+    },
+
     // ── Data Sync ──────────────────────────────────────────
     async syncEtf(options = {}) {
         return this.request("/api/market/sync/etf", { method: "POST", body: options });
@@ -122,22 +135,8 @@ const API = {
         return this.request(`/api/market/sync/${taskId}`);
     },
 
-    /**
-     * Poll a sync task until completion or failure.
-     * @param {string} taskId
-     * @param {function} onProgress - callback with task object
-     * @param {number} intervalMs - poll interval
-     * @returns {Promise<object>} final task object
-     */
     async pollSyncTask(taskId, onProgress, intervalMs = 2000) {
-        while (true) {
-            const task = await this.getSyncStatus(taskId);
-            if (onProgress) onProgress(task);
-            if (task.status === "completed" || task.status === "failed") {
-                return task;
-            }
-            await new Promise((r) => setTimeout(r, intervalMs));
-        }
+        return this.pollTask(() => this.getSyncStatus(taskId), onProgress, intervalMs);
     },
 
     // ── Macro Data ──────────────────────────────────────────
@@ -173,14 +172,7 @@ const API = {
     },
 
     async pollMacroSyncTask(taskId, onProgress, intervalMs = 2000) {
-        while (true) {
-            const task = await this.getMacroSyncStatus(taskId);
-            if (onProgress) onProgress(task);
-            if (task.status === "completed" || task.status === "failed") {
-                return task;
-            }
-            await new Promise((r) => setTimeout(r, intervalMs));
-        }
+        return this.pollTask(() => this.getMacroSyncStatus(taskId), onProgress, intervalMs);
     },
 };
 

@@ -139,16 +139,11 @@ async function loadConstraints() {
     }
 }
 
-function renderConstraintPanel() {
-    const panel = document.getElementById("constraint-panel");
-    if (!panel) return;
+function constraintsPanelHtml() {
     const c = constraintsCache;
-    if (!c) {
-        panel.innerHTML = `<div class="text-muted" style="font-size:13px;">约束配置加载失败</div>`;
-        return;
-    }
+    if (!c) return `<div class="text-muted" style="font-size:13px;">约束配置加载失败</div>`;
     const cats = c.category_constraints || [];
-    panel.innerHTML = `
+    return `
         <div style="font-size:13px;line-height:2;">
             <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border-subtle);">
                 <span class="text-muted">单票权重范围</span>
@@ -161,6 +156,11 @@ function renderConstraintPanel() {
                 </div>`).join("")}
             ${!cats.length ? `<div class="text-muted" style="font-size:12px;">未配置分类约束</div>` : ""}
         </div>`;
+}
+
+function renderConstraintPanel() {
+    const panel = document.getElementById("constraint-panel");
+    if (panel) panel.innerHTML = constraintsPanelHtml();
 }
 
 function currentStrategyName() {
@@ -178,13 +178,7 @@ async function renderParamForm(strategyName) {
 
     let html = `<div class="form-row">`;
     meta.params_schema.forEach((p) => {
-        if (p.type === "json") {
-            html += `
-                <div class="form-group" style="grid-column: 1 / -1;">
-                    <label>${Utils.escapeHtml(p.label)}</label>
-                    <textarea id="param-${p.name}" class="form-control" rows="3" placeholder='[{"assets":[{"sec":"510300.SH","weight":1.0}],"q":0.05,"confidence":0.8}]'></textarea>
-                </div>`;
-        } else if (p.type === "bool") {
+        if (p.type === "bool") {
             html += `
                 <div class="form-group">
                     <label>${Utils.escapeHtml(p.label)}</label>
@@ -288,14 +282,7 @@ async function runStrategy() {
     meta.params_schema.forEach((p) => {
         const rangeEl = document.getElementById(`param-${p.name}-range`);
         const el = document.getElementById(`param-${p.name}`);
-        if (p.type === "json") {
-            try {
-                params[p.name] = JSON.parse(el?.value || "[]");
-            } catch (e) {
-                Components.toast(`${p.label} JSON 格式错误`, "error");
-                return;
-            }
-        } else if (p.type === "bool") {
+        if (p.type === "bool") {
             params[p.name] = el?.value === "true";
         } else if (p.type === "category_weights" || p.type === "category_exponents") {
             const box = document.getElementById(`param-${p.name}`);
@@ -334,7 +321,7 @@ async function runStrategy() {
         if (submitted.status === "failed") {
             setStep(1);
             resetButton();
-            constraintPanel.innerHTML = renderConstraintsHtml();
+            constraintPanel.innerHTML = constraintsPanelHtml();
             resultEl.innerHTML = `<div class="alert alert-error">运行失败: ${Utils.escapeHtml(submitted.error_msg || "未知错误")}</div>`;
             return;
         }
@@ -368,7 +355,7 @@ async function runStrategy() {
     } catch (e) {
         setStep(1);
         resetButton();
-        constraintPanel.innerHTML = renderConstraintsHtml();
+        constraintPanel.innerHTML = constraintsPanelHtml();
         resultEl.innerHTML = `<div class="alert alert-error">运行失败: ${Utils.escapeHtml(e.message)}</div>`;
     }
 }
@@ -389,21 +376,6 @@ function renderConstraintCheck(panel, summary) {
         panel.innerHTML = `<div class="alert alert-success">✅ 约束校验通过
             <div style="font-size:12px;margin-top:4px;">组合满足单票权重与分类约束要求</div></div>`;
     }
-}
-
-function renderConstraintsHtml() {
-    const c = constraintsCache;
-    if (!c) return `<div class="text-muted">约束配置加载失败</div>`;
-    return `
-        <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border-subtle);">
-            <span class="text-muted">单票权重范围</span>
-            <span class="mono">${Utils.formatPct(c.single_min_weight, 0)} ~ ${Utils.formatPct(c.single_max_weight, 0)}</span>
-        </div>
-        ${(c.category_constraints || []).map((cc) => `
-            <div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border-subtle);">
-                <span class="text-muted">${Utils.escapeHtml(cc.category_key)} = ${Utils.escapeHtml(cc.category_value)}</span>
-                <span class="mono">${Utils.formatPct(cc.min_weight, 0)} ~ ${Utils.formatPct(cc.max_weight, 0)}</span>
-            </div>`).join("")}`;
 }
 
 function renderRunSummary(el, summary) {
