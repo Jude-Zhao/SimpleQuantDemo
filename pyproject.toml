@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "akshare>=1.18.0",
     "baostock>=0.8.8",
+    "bt>=1.1.0",
     "fastapi>=0.100.0",
     "matplotlib>=3.8.0",
     "numpy>=1.26.0",
