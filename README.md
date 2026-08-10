@@ -36,7 +36,7 @@ python run_webapp.py
 
 ```bash
 # 安装依赖（含测试）
-pip install -e ".[test]"
+pip install -e ".[dev]"
 
 # 运行全部测试
 pytest -v
