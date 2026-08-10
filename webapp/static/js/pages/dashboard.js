@@ -207,13 +207,22 @@ function loadFactorRanking() {
             // One section per category: header carries the class score, body
             // lists each factor instance as a centered bar.
             el.innerHTML = ranking.map((cat) => {
+                // A non-empty category may still report a null class score when
+                // its score matrix is all-NaN over the sample (e.g. insufficient
+                // cross-section), so guard before calling toFixed.
+                const hasClassScore =
+                    !cat.is_empty &&
+                    cat.class_rank_ic_mean !== null &&
+                    cat.class_rank_ic_mean !== undefined;
                 const head = cat.is_empty
                     ? `<span class="fr-score fr-score-empty">暂无因子</span>`
-                    : `<span class="fr-score">
-                            <span class="fr-score-label">类得分 RankIC</span>
-                            <span class="fr-score-val">${cat.class_rank_ic_mean.toFixed(4)}</span>
-                            <span class="fr-score-sub">IR ${cat.class_rank_icir.toFixed(2)}</span>
-                       </span>`;
+                    : hasClassScore
+                        ? `<span class="fr-score">
+                                <span class="fr-score-label">类得分 RankIC</span>
+                                <span class="fr-score-val">${cat.class_rank_ic_mean.toFixed(4)}</span>
+                                <span class="fr-score-sub">IR ${cat.class_rank_icir.toFixed(2)}</span>
+                           </span>`
+                        : `<span class="fr-score fr-score-empty">类得分暂无数据</span>`;
 
                 const factors = (cat.factors || []).map((f) => {
                     const w = f.params && f.params.window;

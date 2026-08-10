@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy.orm import Session
 
+from webapp.models.database import utc_now
 from webapp.models.classification import ClassificationRule
 from webapp.models.universe import UniverseItem
 from webapp.schemas.classification import (
@@ -55,7 +54,7 @@ def update_rule(db: Session, rule_id: int, update: ClassificationRuleUpdate) -> 
     update_data = update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(rule, key, value)
-    rule.updated_at = datetime.utcnow()
+    rule.updated_at = utc_now()
     db.commit()
     db.refresh(rule)
     return rule

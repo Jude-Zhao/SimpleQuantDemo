@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 
 from core.analysis.ic import calculate_forward_returns, calculate_rank_ic
 from core.factors.config import list_factor_categories
-from webapp.models.database import get_db
+from webapp.models.database import get_db, utc_now
 from webapp.models.strategy_run import StrategyRun
 from webapp.services.data_service import get_etf_price, get_etf_list
-from webapp.services.eaa_faa import build_category_factors, build_category_scores
+from webapp.services.eaa_faa import build_category_factors, category_score_from_matrices
 from webapp.services.factor_service import list_factor_categories_meta
 from webapp.services.universe_service import list_active_universe
 from webapp.services.strategy_service import DEFAULT_END, DEFAULT_START
@@ -86,8 +86,6 @@ class RecentRunItem(BaseModel):
 @router.get("/stats", response_model=DashboardStats)
 def get_stats(db: Session = Depends(get_db)):
     """Get summary statistics for the dashboard cards."""
-    from datetime import datetime
-
     universe_count = len(list_active_universe(db))
     factor_count = sum(
         len(cat.factors) for cat in list_factor_categories_meta()
@@ -95,7 +93,7 @@ def get_stats(db: Session = Depends(get_db)):
 
     # "今日"按 UTC 自然日口径统计，与 StrategyRun.created_at 落库(UTC)一致，
     # 避免 naive datetime 与本地时区比较产生跨天偏差。
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     run_count_today = (
         db.query(StrategyRun)
         .filter(StrategyRun.created_at >= today_start)
@@ -146,10 +144,6 @@ def get_factor_ranking(db: Session = Depends(get_db)):
     forward_returns = calculate_forward_returns(
         price_data, horizon=RANK_IC_HORIZON, universe=universe
     )
-    try:
-        scores = build_category_scores(price_data, universe, categories)
-    except Exception:
-        scores = {}
 
     ranking: list[FactorRankingItem] = []
     for cat in categories:
@@ -162,6 +156,8 @@ def get_factor_ranking(db: Session = Depends(get_db)):
             continue
 
         try:
+            # Build the category's factor matrices once and reuse them for both
+            # the per-instance RankIC and the equal-weighted category score.
             matrices = build_category_factors(price_data, universe, cat)
         except Exception:
             # Skip categories that fail to build on the default data range.
@@ -181,10 +177,9 @@ def get_factor_ranking(db: Session = Depends(get_db)):
             ))
 
         class_mean = class_icir = None
-        if cat.key in scores:
-            class_rank_ic = calculate_rank_ic(
-                scores[cat.key], forward_returns
-            ).dropna()
+        score = category_score_from_matrices(matrices)
+        if score is not None:
+            class_rank_ic = calculate_rank_ic(score, forward_returns).dropna()
             if not class_rank_ic.empty:
                 class_mean = float(class_rank_ic.mean())
                 std = class_rank_ic.std()

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import Column, DateTime, Integer, JSON, String, Text
 
-from webapp.models.database import Base
+from webapp.models.database import Base, utc_now
 
 
 class StrategyRun(Base):
@@ -27,5 +25,5 @@ class StrategyRun(Base):
     result_summary = Column(JSON, default=dict)  # metrics, equity_curve, daily_returns, weights, turnover, costs, rebalance_dates
     status = Column(String, default="pending", index=True)  # pending / running / success / failed
     error_msg = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
     completed_at = Column(DateTime, nullable=True)

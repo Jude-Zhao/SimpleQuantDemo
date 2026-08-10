@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String
 
-from webapp.models.database import Base
+from webapp.models.database import Base, utc_now
 
 
 class ClassificationRule(Base):
@@ -26,5 +24,5 @@ class ClassificationRule(Base):
     config = Column(JSON, default=dict)  # rule-specific configuration
     is_active = Column(Boolean, default=True, index=True)
     priority = Column(Integer, default=100, index=True)  # lower = higher priority
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)

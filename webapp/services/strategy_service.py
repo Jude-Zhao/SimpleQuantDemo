@@ -12,7 +12,6 @@ Orchestrates the full pipeline for each strategy type:
 from __future__ import annotations
 
 import threading
-from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -28,6 +27,7 @@ from core.optimization import (
 from research.backtest import BacktestConfig, BacktestResult, run_backtest
 from webapp.config import get_config
 from webapp.models.constraint_config import ConstraintConfig
+from webapp.models.database import utc_now
 from webapp.models.strategy_run import StrategyRun
 from webapp.schemas.strategy import (
     ConstraintViolationItem,
@@ -287,7 +287,7 @@ def _execute_run(run_id: int) -> None:
         # Persist success
         run.status = "success"
         run.result_summary = _result_to_dict(result, violations)
-        run.completed_at = datetime.utcnow()
+        run.completed_at = utc_now()
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -295,7 +295,7 @@ def _execute_run(run_id: int) -> None:
         if run:
             run.status = "failed"
             run.error_msg = str(exc)
-            run.completed_at = datetime.utcnow()
+            run.completed_at = utc_now()
             db.commit()
     finally:
         try:
@@ -517,7 +517,7 @@ def cleanup_orphaned_runs() -> None:
         for run in orphans:
             run.status = "failed"
             run.error_msg = "服务重启，任务中断"
-            run.completed_at = datetime.utcnow()
+            run.completed_at = utc_now()
         db.commit()
     finally:
         db.close()

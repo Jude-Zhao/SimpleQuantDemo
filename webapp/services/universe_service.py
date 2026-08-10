@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy.orm import Session
 
+from webapp.models.database import utc_now
 from webapp.models.universe import UniverseItem
 from webapp.schemas.universe import UniverseItemCreate
 
@@ -98,7 +97,7 @@ def remove_universe_item(db: Session, sec_code: str) -> bool:
         return False
 
     item.is_active = False
-    item.removed_at = datetime.utcnow()
+    item.removed_at = utc_now()
     db.commit()
     return True
 

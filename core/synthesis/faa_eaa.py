@@ -97,21 +97,31 @@ def build_category_scores(
         matrices = build_category_factors(price_data, universe, cat, resolver=resolver)
         if not matrices:
             continue
-        normed = [normalize_cross_section(m) for m in matrices]
-        # Equal-weight mean across factors, ignoring NaN cells per (date, sec).
-        arr = np.stack([m.values for m in normed], axis=2).astype(float)
-        valid = ~np.isnan(arr)
-        count = valid.sum(axis=2)
-        with np.errstate(invalid="ignore"):
-            mean_vals = np.where(valid, arr, 0.0).sum(axis=2) / np.where(
-                count == 0, 1, count
-            )
-        mean_vals[count == 0] = np.nan
-        score = pd.DataFrame(
-            mean_vals, index=normed[0].index, columns=normed[0].columns
-        )
-        result[cat.key] = score
+        score = category_score_from_matrices(matrices)
+        if score is not None:
+            result[cat.key] = score
     return result
+
+
+def category_score_from_matrices(matrices: list[pd.DataFrame]) -> pd.DataFrame | None:
+    """Equal-weight mean of a category's per-factor normalized matrices.
+
+    Each factor matrix is min-max normalized per cross-section, then averaged
+    across instances ignoring NaN cells per (date, sec). Returns ``None`` when
+    ``matrices`` is empty (no factors to synthesize).
+    """
+    normed = [normalize_cross_section(m) for m in matrices]
+    if not normed:
+        return None
+    arr = np.stack([m.values for m in normed], axis=2).astype(float)
+    valid = ~np.isnan(arr)
+    count = valid.sum(axis=2)
+    with np.errstate(invalid="ignore"):
+        mean_vals = np.where(valid, arr, 0.0).sum(axis=2) / np.where(
+            count == 0, 1, count
+        )
+    mean_vals[count == 0] = np.nan
+    return pd.DataFrame(mean_vals, index=normed[0].index, columns=normed[0].columns)
 
 
 def _reindex_weights(

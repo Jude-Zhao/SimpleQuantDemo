@@ -1,9 +1,21 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from webapp.config import get_config
+
+
+def utc_now() -> datetime:
+    """Return the current UTC time as a naive datetime.
+
+    Equivalent to the deprecated ``datetime.utcnow()``, but built from a
+    timezone-aware clock to avoid the Python 3.12+ removal warning while
+    keeping the naive-``DateTime`` column semantics unchanged.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
+
 
 _config = get_config()
 
