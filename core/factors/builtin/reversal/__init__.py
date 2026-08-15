@@ -1,1 +1,0 @@
-"""Reversal factor implementations (分类: 反转)."""

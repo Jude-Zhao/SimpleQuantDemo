@@ -1,0 +1,1 @@
+"""60-day MA slope reversal factor (分类: 反转)."""

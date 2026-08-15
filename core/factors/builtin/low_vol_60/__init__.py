@@ -1,0 +1,1 @@
+"""60-day low volatility factor (分类: 波动)."""

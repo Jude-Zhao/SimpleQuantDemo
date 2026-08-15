@@ -7,107 +7,67 @@ import pandas as pd
 from core.factors.registry import (
     discover_factors,
     get_factor_class,
-    get_factor_registry,
     list_factor_names,
 )
+
+
+def _long_price_data(n: int = 70) -> pd.DataFrame:
+    """Monotonically increasing close, two securities, with volume."""
+    dates = pd.date_range("2024-01-01", periods=n, freq="B")
+    closes = [100.0 + i for i in range(n)]
+    return pd.DataFrame(
+        {
+            "date": dates.repeat(2),
+            "sec": ["A", "B"] * n,
+            "open": closes * 2,
+            "high": [c + 0.5 for c in closes] * 2,
+            "low": [c - 0.5 for c in closes] * 2,
+            "close": closes * 2,
+            "volume": [100] * (n * 2),
+        }
+    )
 
 
 def test_discover_factors():
     discover_factors()
     names = list_factor_names()
-    assert "momentum" in names
-    assert "volatility" in names
-    assert "reversal" in names
+    assert {"aroon_diff", "momentum_60_reversal", "ma60_slope_reversal", "low_vol_60", "money_flow_20"}.issubset(names)
 
 
-def test_get_factor_class():
-    cls = get_factor_class("momentum")
+def test_get_factor_class_no_params():
+    cls = get_factor_class("aroon_diff")
     assert cls is not None
-    factor = cls(window=10)
-    assert factor.name == "momentum_10"
+    factor = cls()
+    assert factor.name == "aroon_diff"
 
 
-def test_reversal_factor_auto_registered():
-    names = list_factor_names()
-    assert "reversal" in names
-    cls = get_factor_class("reversal")
+def test_momentum_60_reversal_is_negated():
+    """60-day momentum reversal output equals -pct_change(60)."""
+    cls = get_factor_class("momentum_60_reversal")
     assert cls is not None
-    assert cls.display_name == "反转因子"
-    assert cls.category == "价值"
-    assert cls.direction == "positive"
-    assert "window" in cls.params_schema
-
-
-def test_reversal_factor_build():
-    cls = get_factor_class("reversal")
-    assert cls is not None
-    factor = cls(window=5)
-
-    dates = pd.date_range("2024-01-01", periods=10, freq="B")
-    prices = pd.DataFrame({
-        "date": dates.repeat(2),
-        "sec": ["A", "B"] * 10,
-        "close": [100, 50, 101, 51, 102, 52, 103, 53, 104, 54,
-                  105, 55, 106, 56, 107, 57, 108, 58, 109, 59],
-    })
-
+    factor = cls()
+    prices = _long_price_data()
     result = factor.build(prices, pd.DataFrame(), ["A", "B"])
-    assert result.shape[1] == 2
-    assert list(result.columns) == ["A", "B"]
-    # 反转因子是动量的相反数
-    from core.factors.registry import get_factor_class as gfc
-    mom_cls = gfc("momentum")
-    mom = mom_cls(window=5)
-    mom_result = mom.build(prices, pd.DataFrame(), ["A", "B"])
-    # 非 NaN 值应该互为相反数
-    common = result.dropna().index.intersection(mom_result.dropna().index)
-    assert len(common) > 0
-    pd.testing.assert_series_equal(
-        result.loc[common, "A"],
-        -mom_result.loc[common, "A"],
-        check_names=False,
-    )
+    close = prices.pivot(index="date", columns="sec", values="close")
+    expected = -close.pct_change(periods=60, fill_method=None)
+    expected.index.name = "date"
+    pd.testing.assert_frame_equal(result, expected)
 
 
-def test_factor_meta_momentum():
-    cls = get_factor_class("momentum")
+def test_low_vol_60_meta():
+    cls = get_factor_class("low_vol_60")
     assert cls is not None
-    assert cls.display_name == "动量因子"
-    assert cls.category == "动量"
+    assert cls.display_name == "60日低波动"
+    assert cls.category == "波动"
+    assert cls.direction == "positive"  # 因子层已取反，低波动得高分
+
+
+def test_money_flow_20_meta():
+    cls = get_factor_class("money_flow_20")
+    assert cls is not None
+    assert cls.display_name == "20日资金流方向"
+    assert cls.category == "量能"
     assert cls.direction == "positive"
-    assert "window" in cls.params_schema
-    assert cls.params_schema["window"]["type"] == "int"
-    assert cls.params_schema["window"]["default"] == 5
-    assert cls.params_schema["window"]["label"] == "窗口天数"
-
-
-def test_factor_meta_volatility():
-    cls = get_factor_class("volatility")
-    assert cls is not None
-    assert cls.display_name == "波动率因子"
-    assert cls.category == "波动率"
-    assert cls.direction == "positive"  # 因子层已直接取反，低波动得高分
-    assert "window" in cls.params_schema
-    assert "annualization" in cls.params_schema
-
-
-def test_factor_volatility_is_negated():
-    """波动率因子输出取反：低波动标的得分更高。"""
-    cls = get_factor_class("volatility")
-    assert cls is not None
-    factor = cls(window=3)
-
-    dates = pd.date_range("2024-01-01", periods=6, freq="B")
-    # A 波动小（平稳上涨），B 波动大（剧烈震荡）
-    prices = pd.DataFrame({
-        "date": dates.repeat(2),
-        "sec": ["A", "B"] * 6,
-        "close": [100, 100, 101, 105, 102, 90, 103, 108, 104, 95, 105, 110],
-    })
-
-    result = factor.build(prices, pd.DataFrame(), ["A", "B"])
-    last = result.iloc[-1].dropna()
-    assert last["A"] > last["B"], "低波动 A 应得分更高（已取反）"
 
 
 def test_factor_formula_present():
@@ -118,21 +78,12 @@ def test_factor_formula_present():
         assert cls.description, f"Factor {name} should have a description"
 
 
-def test_momentum_factor_still_works():
-    """Ensure the refactored momentum factor still computes correctly."""
-    cls = get_factor_class("momentum")
-    assert cls is not None
-    factor = cls(window=5)
-
-    dates = pd.date_range("2024-01-01", periods=10, freq="B")
-    prices = pd.DataFrame({
-        "date": dates.repeat(2),
-        "sec": ["A", "B"] * 10,
-        "close": [100, 50, 101, 51, 102, 52, 103, 53, 104, 54,
-                  105, 55, 106, 56, 107, 57, 108, 58, 109, 59],
-    })
-
-    result = factor.build(prices, pd.DataFrame(), ["A", "B"])
-    assert result.shape[1] == 2
-    assert list(result.columns) == ["A", "B"]
-    assert result.index.name == "date"
+def test_new_factors_build_on_generated_data():
+    """Every new built-in factor builds a date x sec matrix."""
+    prices = _long_price_data(n=80)
+    for name in ["aroon_diff", "momentum_60_reversal", "ma60_slope_reversal", "low_vol_60", "money_flow_20"]:
+        cls = get_factor_class(name)
+        factor = cls().build(prices, pd.DataFrame(), ["A", "B"])
+        assert factor.shape[1] == 2
+        assert list(factor.columns) == ["A", "B"]
+        assert factor.index.name == "date"

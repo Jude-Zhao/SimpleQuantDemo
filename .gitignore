@@ -35,6 +35,10 @@ Thumbs.db
 
 # Project generated outputs
 data_example/
+
+# Research-only factors not yet ported to core (kept local, not committed)
+research/factors/etf15_*.py
+
 research/output/
 trading/output/
 data/raw/

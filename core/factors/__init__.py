@@ -9,8 +9,21 @@ on startup — see ``core/factors/README.md`` for a how-to guide.
 """
 
 from core.factors.base import FactorBuilder
-from core.factors.builtin.momentum.momentum import MomentumFactor
-from core.factors.builtin.reversal.reversal import ReversalFactor
-from core.factors.builtin.volatility.volatility import VolatilityFactor
+from core.factors.builtin.aroon_diff.aroon_diff import AroonDiffFactor
+from core.factors.builtin.low_vol_60.low_vol_60 import LowVol60Factor
+from core.factors.builtin.ma60_slope_reversal.ma60_slope_reversal import (
+    MA60SlopeReversalFactor,
+)
+from core.factors.builtin.momentum_60_reversal.momentum_60_reversal import (
+    Momentum60ReversalFactor,
+)
+from core.factors.builtin.money_flow_20.money_flow_20 import MoneyFlow20Factor
 
-__all__ = ["FactorBuilder", "MomentumFactor", "ReversalFactor", "VolatilityFactor"]
+__all__ = [
+    "FactorBuilder",
+    "AroonDiffFactor",
+    "Momentum60ReversalFactor",
+    "MA60SlopeReversalFactor",
+    "LowVol60Factor",
+    "MoneyFlow20Factor",
+]

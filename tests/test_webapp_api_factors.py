@@ -31,15 +31,14 @@ def test_get_factors():
             assert "params" in f
             assert "display_name" in f
             assert "params_schema" in f
-    # Non-empty momentum class has windowed instances
+    # Non-empty momentum class has the migrated aroon_diff
     mom = next(c for c in data if c["key"] == "momentum")
     assert mom["is_empty"] is False
-    assert "momentum(20)" in [f["id"] for f in mom["factors"]]
-    assert "momentum(120)" in [f["id"] for f in mom["factors"]]
-    # volume is empty
+    assert "aroon_diff" in [f["id"] for f in mom["factors"]]
+    # volume now holds migrated money_flow_20
     vol = next(c for c in data if c["key"] == "volume")
-    assert vol["is_empty"] is True
-    assert vol["factors"] == []
+    assert vol["is_empty"] is False
+    assert "money_flow_20" in [f["id"] for f in vol["factors"]]
 
 
 def test_compute_factor_unknown():

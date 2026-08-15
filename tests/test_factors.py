@@ -4,7 +4,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from core.factors import MomentumFactor, VolatilityFactor
+from core.factors import (
+    AroonDiffFactor,
+    LowVol60Factor,
+    MA60SlopeReversalFactor,
+    Momentum60ReversalFactor,
+    MoneyFlow20Factor,
+)
 from core.factors.exceptions import FactorValidationError
 from core.factors.utils import pivot_price_field, validate_factor_panel
 
@@ -25,8 +31,31 @@ def _sample_price_data() -> pd.DataFrame:
     )
 
 
+def _long_price_data(n: int = 70) -> pd.DataFrame:
+    """Monotonically increasing close for windowed-factor formula tests."""
+    dates = pd.date_range("2026-01-01", periods=n, freq="D")
+    closes = [10.0 + i for i in range(n)]
+    opens = [10.0 + i for i in range(n)]
+    return pd.DataFrame(
+        {
+            "date": list(dates) * 2,
+            "sec": ["510300.SH"] * n + ["159928.SZ"] * n,
+            "open": opens * 2,
+            "high": [c + 0.5 for c in closes] * 2,
+            "low": [c - 0.5 for c in closes] * 2,
+            "close": closes * 2,
+            "volume": [100] * (n * 2),
+            "amount": [1000] * (n * 2),
+        }
+    )
+
+
 def _empty_macro() -> pd.DataFrame:
-    return pd.DataFrame(index=pd.date_range("2026-01-01", periods=6, freq="D"))
+    return pd.DataFrame(index=pd.date_range("2026-01-01", periods=70, freq="D"))
+
+
+def _universe() -> list[str]:
+    return ["510300.SH", "159928.SZ"]
 
 
 def test_pivot_price_field_keeps_universe_order() -> None:
@@ -38,28 +67,23 @@ def test_pivot_price_field_keeps_universe_order() -> None:
     assert matrix.loc[pd.Timestamp("2026-01-03"), "510300.SH"] == 12
 
 
-def test_momentum_factor_formula() -> None:
-    factor = MomentumFactor(window=2).build(
-        _sample_price_data(),
-        _empty_macro(),
-        ["510300.SH", "159928.SZ"],
+def test_momentum_60_reversal_formula() -> None:
+    factor = Momentum60ReversalFactor().build(
+        _long_price_data(), _empty_macro(), _universe()
     )
+    close = pivot_price_field(_long_price_data(), universe=_universe())
+    expected = -close.pct_change(periods=60, fill_method=None)
 
-    assert factor.columns.tolist() == ["510300.SH", "159928.SZ"]
-    assert np.isnan(factor.loc[pd.Timestamp("2026-01-02"), "510300.SH"])
-    assert factor.loc[pd.Timestamp("2026-01-03"), "510300.SH"] == pytest.approx(0.2)
-    assert factor.loc[pd.Timestamp("2026-01-04"), "159928.SZ"] == pytest.approx(0.1)
+    pd.testing.assert_frame_equal(factor, expected)
 
 
-def test_volatility_factor_formula() -> None:
-    price_data = _sample_price_data()
-    factor = VolatilityFactor(window=3, annualization=252).build(
-        price_data,
-        _empty_macro(),
-        ["510300.SH", "159928.SZ"],
+def test_ma60_slope_reversal_formula() -> None:
+    factor = MA60SlopeReversalFactor().build(
+        _long_price_data(), _empty_macro(), _universe()
     )
-    close = pivot_price_field(price_data, universe=["510300.SH", "159928.SZ"])
-    expected = -close.pct_change(fill_method=None).rolling(3, min_periods=3).std() * np.sqrt(252)
+    close = pivot_price_field(_long_price_data(), universe=_universe())
+    ma60 = close.rolling(60).mean()
+    expected = -(ma60 / ma60.shift(20) - 1.0)
 
     pd.testing.assert_frame_equal(factor, expected)
 
@@ -80,15 +104,21 @@ def test_builtin_factors_build_on_example_data(sqlite_source) -> None:
         start_date="2024-06-03",
         end_date="2025-12-31",
     )
-
-    momentum = MomentumFactor(window=5).build(price_data, macro_data, universe)
-    volatility = VolatilityFactor(window=20).build(price_data, macro_data, universe)
     close = pivot_price_field(price_data, universe=universe)
 
-    validate_factor_panel({MomentumFactor().name: momentum, VolatilityFactor().name: volatility}, universe)
-    assert momentum.shape == close.shape
-    assert volatility.shape == close.shape
-    assert momentum.index.min() == close.index.min()
-    assert volatility.index.max() == close.index.max()
-    assert int(momentum.notna().sum().sum()) > 0
-    assert int(volatility.notna().sum().sum()) > 0
+    factors = {
+        AroonDiffFactor().name: AroonDiffFactor().build(price_data, macro_data, universe),
+        Momentum60ReversalFactor().name: Momentum60ReversalFactor().build(
+            price_data, macro_data, universe
+        ),
+        MA60SlopeReversalFactor().name: MA60SlopeReversalFactor().build(
+            price_data, macro_data, universe
+        ),
+        LowVol60Factor().name: LowVol60Factor().build(price_data, macro_data, universe),
+        MoneyFlow20Factor().name: MoneyFlow20Factor().build(price_data, macro_data, universe),
+    }
+
+    validate_factor_panel(factors, universe)
+    for name, matrix in factors.items():
+        assert matrix.shape == close.shape
+        assert int(matrix.notna().sum().sum()) > 0

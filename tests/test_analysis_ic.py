@@ -12,7 +12,7 @@ from core.analysis import (
     calculate_rank_ic,
 )
 from core.analysis.exceptions import AnalysisError
-from core.factors import MomentumFactor
+from core.factors import AroonDiffFactor
 
 
 def _sample_price_data() -> pd.DataFrame:
@@ -133,7 +133,7 @@ def test_ic_pipeline_with_example_data(sqlite_source) -> None:
         end_date="2025-12-31",
     )
 
-    factor = MomentumFactor(window=5).build(price_data, macro_data, universe)
+    factor = AroonDiffFactor().build(price_data, macro_data, universe)
     forward_returns = calculate_forward_returns(price_data, horizon=5, universe=universe)
     ic = calculate_factor_ic(factor, forward_returns, min_observations=10)
     rank_ic = calculate_rank_ic(factor, forward_returns, min_observations=10)

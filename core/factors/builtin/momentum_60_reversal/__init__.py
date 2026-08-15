@@ -1,0 +1,1 @@
+"""60-day momentum reversal factor (分类: 反转)."""

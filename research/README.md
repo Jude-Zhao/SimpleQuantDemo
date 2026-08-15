@@ -26,8 +26,7 @@ research/
 └── output/               # 回测结果输出（自动生成）
     └── backtest_results/ # summary.csv / factor_stats.csv / equity_curve.csv / *.png ...
 ```
-
-> research 的因子池与 core 的注册表是**两套独立**的。研究因子用 `research.factors` 注册，`resolve_factor_class` 会**先查研究池、再回退到 core 内置因子**，所以研究配置里可以混用自定义因子和 core 内置因子（momentum / volatility / reversal）。
+究配置里可以混用自定义因子和 core 内置因子（momentum / volatility / reversal）。
 
 ---
 
@@ -44,6 +43,7 @@ research/
 data/simple_quant.db  ── etf_daily_bar 表（后复权价 + adj_factor 复权因子）
         │  research 用 SqliteDataSource 读取
         ▼
+> research 的因子池与 core 的注册表是**两套独立**的。研究因子用 `research.factors` 注册，`resolve_factor_class` 会**先查研究池、再回退到 core 内置因子**，所以研
 factor 计算 / IC 分析 / 策略回测
 ```
 

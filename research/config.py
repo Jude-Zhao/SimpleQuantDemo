@@ -23,6 +23,11 @@ class ResearchConfig:
     output_dir: Path = PROJECT_ROOT / "research" / "output" / "backtest_results"
     start_date: str = "2019-11-01"
     end_date: str | None = None
+    # Data loading start (warm-up history). If None, defaults to ``start_date``
+    # so evaluation/backtest and data loading share the same origin. When set
+    # earlier than ``start_date``, factors get look-back history for windows
+    # (e.g. 120d) while IC/backtest still start at ``start_date``.
+    data_start_date: str | None = None
 
     # Strategy selection
     strategy_type: str = "faa"  # "faa" | "eaa"

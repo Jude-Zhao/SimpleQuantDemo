@@ -1,0 +1,1 @@
+"""20-day money-flow factor (分类: 量能)."""

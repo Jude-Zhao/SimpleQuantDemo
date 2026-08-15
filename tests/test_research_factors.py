@@ -28,18 +28,21 @@ def test_resolve_custom_research_factor() -> None:
 
 
 def test_resolve_falls_back_to_core() -> None:
-    cls = resolve_factor_class("momentum")
+    cls = resolve_factor_class("aroon_diff")
     assert cls is not None
-    assert cls.__name__ == "MomentumFactor"
+    assert cls.__name__ == "AroonDiffFactor"
 
 
-def test_load_research_categories_mixes_sources() -> None:
+def test_load_research_categories_returns_unmigrated_factors() -> None:
     cats = load_research_categories()
     keys = [c.key for c in cats]
-    assert "research_demo" in keys
+    assert "momentum" in keys
+    assert "reversal" in keys
+    assert "volatility" in keys
+    assert "volume" in keys
     names = {f.name for c in cats for f in c.factors}
-    assert "price_position" in names  # research custom
-    assert "momentum" in names  # core built-in fallback
+    assert "macd_hist" in names  # unmigrated research factor
+    assert "mfi" in names
 
 
 def test_protocol_migration_consistency(sqlite_source) -> None:

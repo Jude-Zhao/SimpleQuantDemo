@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
-from core.factors import MomentumFactor, VolatilityFactor
+from core.factors import AroonDiffFactor, LowVol60Factor
 from core.synthesis import ICIRWeightedSynthesizer
 from research.backtest import BacktestConfig, run_backtest
 
@@ -119,8 +119,8 @@ def test_run_backtest_with_example_pipeline(sqlite_source) -> None:
         end_date="2025-12-31",
     )
     factor_panel = {
-        "momentum_5": MomentumFactor(window=5).build(price_data, macro_data, universe),
-        "volatility_20": VolatilityFactor(window=20).build(price_data, macro_data, universe),
+        "momentum_5": AroonDiffFactor().build(price_data, macro_data, universe),
+        "volatility_20": LowVol60Factor().build(price_data, macro_data, universe),
     }
     forward_returns = calculate_forward_returns(price_data, horizon=5, universe=universe)
     icir_data = {

@@ -11,23 +11,28 @@ from webapp.services.factor_service import (
 )
 
 
-def _make_price_data(n_dates: int = 60, n_sec: int = 10, seed: int = 42) -> pd.DataFrame:
-    """Generate synthetic price data for testing."""
+def _make_price_data(n_dates: int = 120, n_sec: int = 10, seed: int = 42) -> pd.DataFrame:
+    """Generate synthetic OHLCV price data for testing."""
     np.random.seed(seed)
     dates = pd.date_range("2024-01-01", periods=n_dates, freq="B")
     secs = [f"ETF{i:02d}" for i in range(n_sec)]
 
     rows = []
     base_prices = np.linspace(50, 150, n_sec)
-    for i, date in enumerate(dates):
+    for date in dates:
         for j, sec in enumerate(secs):
             drift = 0.0005 * (j - n_sec / 2)
             noise = np.random.randn() * 0.01
             base_prices[j] *= (1 + drift + noise)
+            close = round(base_prices[j], 4)
             rows.append({
                 "date": date,
                 "sec": sec,
-                "close": round(base_prices[j], 4),
+                "open": round(close * 0.995, 4),
+                "high": round(close * 1.01, 4),
+                "low": round(close * 0.99, 4),
+                "close": close,
+                "volume": 1000,
             })
     return pd.DataFrame(rows)
 
@@ -37,40 +42,36 @@ def test_list_factors():
     factors = [f for cat in cats for f in cat.factors]
     assert len(factors) >= 3
     ids = [f.id for f in factors]
-    assert "momentum(20)" in ids
-    assert "volatility(20)" in ids
-    assert "reversal(20)" in ids
+    assert "aroon_diff" in ids
+    assert "low_vol_60" in ids
+    assert "money_flow_20" in ids
 
-    # Check meta fields on an instance
-    f = next(f for f in factors if f.name == "momentum")
-    assert f.id == "momentum(20)" or f.id.startswith("momentum(")
-    assert f.display_name == "动量因子"
+    # Check meta fields on a migrated factor instance
+    f = next(f for f in factors if f.name == "aroon_diff")
+    assert f.id == "aroon_diff"
+    assert f.display_name == "25日Aroon差值"
     assert f.category == "动量"
     assert f.formula
     assert f.description
     assert f.direction == "positive"
-    assert f.params == {"window": 20}
-    assert "window" in f.params_schema
-    assert f.params_schema["window"].type == "int"
-    assert f.params_schema["window"].default == 5
-    assert f.params_schema["window"].label == "窗口天数"
+    assert f.params == {}
 
 
-def test_compute_factor_momentum():
+def test_compute_factor_aroon_diff():
     price_data = _make_price_data()
     universe = [f"ETF{i:02d}" for i in range(10)]
 
     result = compute_factor(
-        factor_name="momentum",
-        params={"window": 5},
+        factor_name="aroon_diff",
+        params={},
         price_data=price_data,
         macro_data=pd.DataFrame(),
         universe=universe,
         horizon=5,
     )
 
-    assert result.factor_name == "momentum"
-    assert result.display_name == "动量因子"
+    assert result.factor_name == "aroon_diff"
+    assert result.display_name == "25日Aroon差值"
     assert isinstance(result.ic_result.ic_mean, float)
     assert isinstance(result.ic_result.ic_std, float)
     assert isinstance(result.ic_result.icir, float)
@@ -88,21 +89,21 @@ def test_compute_factor_momentum():
         assert isinstance(g.cumulative_return, float)
 
 
-def test_compute_factor_volatility():
+def test_compute_factor_money_flow():
     price_data = _make_price_data()
     universe = [f"ETF{i:02d}" for i in range(10)]
 
     result = compute_factor(
-        factor_name="volatility",
-        params={"window": 10, "annualization": 252},
+        factor_name="money_flow_20",
+        params={},
         price_data=price_data,
         macro_data=pd.DataFrame(),
         universe=universe,
         horizon=5,
     )
 
-    assert result.factor_name == "volatility"
-    assert result.display_name == "波动率因子"
+    assert result.factor_name == "money_flow_20"
+    assert result.display_name == "20日资金流方向"
     assert len(result.ic_result.ic_series) > 0
     assert len(result.group_returns) == 5
 

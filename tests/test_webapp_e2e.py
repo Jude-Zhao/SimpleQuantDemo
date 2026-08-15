@@ -52,14 +52,14 @@ def test_e2e_add_universe_and_get_factors():
 def test_e2e_compute_factor():
     """3. Compute a factor."""
     response = client.post("/api/factors/compute", json={
-        "factor_name": "momentum",
-        "params": {"window": 5},
+        "factor_name": "aroon_diff",
+        "params": {},
         "horizon": 5,
     })
     assert response.status_code in (200, 503)  # 503 if no network data available
     if response.status_code == 200:
         data = response.json()
-        assert data["factor_name"] == "momentum"
+        assert data["factor_name"] == "aroon_diff"
         assert "ic_result" in data
         assert "group_returns" in data
 

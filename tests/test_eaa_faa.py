@@ -23,18 +23,23 @@ from webapp.services.eaa_faa import (
 UNIVERSE = ["510300.SH", "510500.SH", "159915.SZ", "511010.SH", "513770.SH"]
 
 
-def _price_data(n_days: int = 60, seed: int = 1) -> pd.DataFrame:
+def _price_data(n_days: int = 100, seed: int = 1) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
     rng = np.random.default_rng(seed)
     wide = pd.DataFrame(
         {s: 100 * np.cumprod(1 + rng.normal(0.0005, 0.01, n_days)) for s in UNIVERSE},
         index=dates,
     )
-    return (
+    df = (
         wide.reset_index()
         .melt(id_vars="index", var_name="sec", value_name="close")
         .rename(columns={"index": "date"})
     )
+    # Migrated factors need OHLCV (aroon_diff uses high/low, money_flow_20 volume).
+    df["high"] = df["close"] * 1.01
+    df["low"] = df["close"] * 0.99
+    df["volume"] = 1000
+    return df
 
 
 def _non_empty_weight(frac: dict[str, float] | None = None) -> dict[str, float]:
@@ -97,7 +102,7 @@ def test_normalize_all_nan_row():
 def test_build_category_scores_non_empty_only():
     cats = list_factor_categories()
     scores = build_category_scores(_price_data(), UNIVERSE, cats)
-    assert set(scores.keys()) == {"momentum", "volatility", "reversal"}
+    assert set(scores.keys()) == {"momentum", "volatility", "reversal", "volume"}
     for key, mat in scores.items():
         assert list(mat.columns) == UNIVERSE
         assert mat.index.is_monotonic_increasing
