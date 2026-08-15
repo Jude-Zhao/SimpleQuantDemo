@@ -35,17 +35,20 @@ def run_bt_backtest(
         close: date × sec close price matrix (aligned with ``target_weights``).
         target_weights: date × sec target weight matrix (holds weights between
             rebalance dates; bt only acts on trigger bars).
-        rebalance_freq: "weekly" or "monthly".
+        rebalance_freq: "weekly", "monthly", or "5d" (every 5 trading days).
         name: strategy name used for the bt result series.
     """
-    if rebalance_freq not in {"weekly", "monthly"}:
-        raise ValueError(f"rebalance_freq must be 'weekly' or 'monthly', got {rebalance_freq!r}")
+    if rebalance_freq not in {"weekly", "monthly", "5d"}:
+        raise ValueError(
+            f"rebalance_freq must be 'weekly', 'monthly', or '5d', got {rebalance_freq!r}"
+        )
 
-    trigger = (
-        bt.algos.RunWeekly()
-        if rebalance_freq == "weekly"
-        else bt.algos.RunMonthly()
-    )
+    if rebalance_freq == "weekly":
+        trigger = bt.algos.RunWeekly()
+    elif rebalance_freq == "monthly":
+        trigger = bt.algos.RunMonthly()
+    else:
+        trigger = bt.algos.RunEveryNPeriods(5)
     strategy = bt.Strategy(
         name,
         algos=[

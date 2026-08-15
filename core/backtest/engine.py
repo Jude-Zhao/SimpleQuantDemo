@@ -20,7 +20,7 @@ class BacktestConfig:
     top_n: int = 5
     max_weight: float = 0.5
     min_weight: float = 0.0
-    transaction_cost_bps: float = 5.0
+    transaction_cost_bps: float = 1.0
     weight_mode: str = "equal"  # "equal" (Top-N equal weight) | "score" (score-proportional)
 
 

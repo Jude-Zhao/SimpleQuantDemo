@@ -360,7 +360,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--strategy", choices=["faa", "eaa"], default=None)
     parser.add_argument("--top-n", type=int, default=None)
-    parser.add_argument("--rebalance-freq", choices=["weekly", "monthly"], default=None)
+    parser.add_argument("--rebalance-freq", choices=["weekly", "monthly", "5d"], default=None)
     return parser
 
 

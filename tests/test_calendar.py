@@ -77,6 +77,16 @@ def test_generate_rebalance_dates_skips_short_periods() -> None:
     assert rebalance_dates.tolist() == [pd.Timestamp("2026-01-06")]
 
 
+def test_generate_5d_rebalance_dates() -> None:
+    trading_dates = pd.bdate_range("2026-01-05", periods=10)
+
+    first = generate_rebalance_dates(trading_dates, rebalance_freq="5d", rebalance_day=0)
+    assert first.tolist() == [trading_dates[0], trading_dates[5]]
+
+    second = generate_rebalance_dates(trading_dates, rebalance_freq="5d", rebalance_day=1)
+    assert second.tolist() == [trading_dates[1], trading_dates[6]]
+
+
 def test_generate_rebalance_dates_rejects_invalid_args() -> None:
     with pytest.raises(ValueError):
         generate_rebalance_dates(pd.DatetimeIndex(["2026-01-05"]), rebalance_freq="daily")

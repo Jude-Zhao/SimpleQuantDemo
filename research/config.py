@@ -34,7 +34,7 @@ class ResearchConfig:
     top_n: int = 5
     max_weight: float = 1.0
     min_weight: float = 0.0
-    rebalance_freq: str = "monthly"  # "weekly" | "monthly"
+    rebalance_freq: str = "5d"  # "5d"（每5个交易日） | "weekly" | "monthly"
     weight_mode: str = "equal"  # "equal" (FAA) | "score" (EAA)
 
     # FAA / EAA category-level parameters. Empty dicts default to equal

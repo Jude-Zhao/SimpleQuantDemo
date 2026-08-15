@@ -75,7 +75,7 @@ def _build_meta() -> list[StrategyMeta]:
             ),
             params_schema=[
                 StrategyParamSchema(name="top_n", type="int", default=5, min=3, max=9, step=2, label="持仓数量 (Top N)"),
-                StrategyParamSchema(name="rebalance_freq", type="str", default="monthly", label="调仓频率", options=["weekly", "monthly"]),
+                StrategyParamSchema(name="rebalance_freq", type="str", default="5d", label="调仓频率", options=["weekly", "monthly", "5d"]),
                 StrategyParamSchema(name="class_weights", type="category_weights", default=default_weights, label="因子类权重", options=slider_options),
             ],
         ),
@@ -88,7 +88,7 @@ def _build_meta() -> list[StrategyMeta]:
             ),
             params_schema=[
                 StrategyParamSchema(name="top_n", type="int", default=5, min=3, max=9, step=2, label="持仓数量 (Top N)"),
-                StrategyParamSchema(name="rebalance_freq", type="str", default="monthly", label="调仓频率", options=["weekly", "monthly"]),
+                StrategyParamSchema(name="rebalance_freq", type="str", default="5d", label="调仓频率", options=["weekly", "monthly", "5d"]),
                 StrategyParamSchema(name="exponents", type="category_exponents", default=default_exponents, label="类缩放系数 α", options=slider_options),
                 StrategyParamSchema(name="beta", type="float", default=1.0, min=0.1, max=5.0, step=0.1, label="整体缩放系数 β"),
             ],
@@ -321,7 +321,7 @@ def _run_faa(
 ) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
     """FAA strategy: weighted sum of normalized category scores, Top-N equal weight."""
     top_n = int(params.get("top_n", 5))
-    rebalance_freq = params.get("rebalance_freq", "monthly")
+    rebalance_freq = params.get("rebalance_freq", "5d")
     class_weights = params.get("class_weights", {}) or {}
 
     categories = list_factor_categories()
@@ -357,7 +357,7 @@ def _run_eaa(
 ) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
     """EAA strategy: power-product of normalized category scores, score-weighted Top-N."""
     top_n = int(params.get("top_n", 5))
-    rebalance_freq = params.get("rebalance_freq", "monthly")
+    rebalance_freq = params.get("rebalance_freq", "5d")
     exponents = params.get("exponents", {}) or {}
     beta = float(params.get("beta", 1.0))
 

@@ -56,3 +56,11 @@ def test_weekly_and_monthly_produce_different_nav() -> None:
     weekly = run_bt_backtest(close, weights, rebalance_freq="weekly")
     monthly = run_bt_backtest(close, weights, rebalance_freq="monthly")
     assert not weekly.equity_curve.equals(monthly.equity_curve)
+
+
+def test_5d_produces_different_nav_from_monthly() -> None:
+    close = _close()
+    weights = _changing_weights(close)
+    five = run_bt_backtest(close, weights, rebalance_freq="5d")
+    monthly = run_bt_backtest(close, weights, rebalance_freq="monthly")
+    assert not five.equity_curve.equals(monthly.equity_curve)
