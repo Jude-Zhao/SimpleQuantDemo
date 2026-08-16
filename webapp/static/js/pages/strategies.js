@@ -208,7 +208,17 @@ async function renderParamForm(strategyName) {
         } else {
             const numeric = p.type === "int" || p.type === "float";
             const hasRange = p.min !== null && p.min !== undefined && p.max !== null && p.max !== undefined;
-            if (numeric && hasRange) {
+            if (p.type === "str" && (p.options || []).length > 0) {
+                // String params with predefined choices render as a dropdown.
+                html += `
+                    <div class="form-group">
+                        <label>${Utils.escapeHtml(p.label)}</label>
+                        <select id="param-${p.name}" class="form-select">
+                            ${p.options.map((opt) => `
+                                <option value="${Utils.escapeHtml(opt)}" ${opt === p.default ? "selected" : ""}>${Utils.escapeHtml(opt)}</option>`).join("")}
+                        </select>
+                    </div>`;
+            } else if (numeric && hasRange) {
                 const step = p.step || (p.type === "int" ? 1 : 0.05);
                 html += `
                     <div class="form-group">
@@ -264,6 +274,10 @@ async function renderParamForm(strategyName) {
             r.addEventListener("input", sync);
         });
     });
+
+    // Params are ready — enable the run button.
+    const runBtn = document.getElementById("btn-run-strategy");
+    if (runBtn) runBtn.disabled = false;
 }
 
 function setStep(n) {

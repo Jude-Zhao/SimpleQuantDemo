@@ -17,6 +17,9 @@
     };
 
     const scriptCache = {};
+    // Bump on each full page load so dynamically-loaded page scripts are never
+    // served from a stale browser cache while frontend files are edited.
+    const pageScriptVersion = Date.now();
 
     function loadScript(route) {
         const { file, fn } = ROUTES[route];
@@ -25,7 +28,7 @@
         }
         return new Promise((resolve, reject) => {
             const script = document.createElement("script");
-            script.src = `/static/js/pages/${file}`;
+            script.src = `/static/js/pages/${file}?v=${pageScriptVersion}`;
             script.onload = () => {
                 const renderFn = window[fn];
                 if (typeof renderFn !== "function") {
