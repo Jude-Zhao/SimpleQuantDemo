@@ -96,7 +96,10 @@ def run_backtest(
         previous_weights = new_weights
 
     weights = target_weights.ffill().fillna(0.0).astype(float)
-    shifted_weights = weights.shift(1).fillna(0.0)
+    # T+1 execution: weights decided on day T are held from the T+1 close, so
+    # they only earn returns from T+2 onward. shift(2) avoids using the
+    # decision-day close as the execution price (which is a lookahead bias).
+    shifted_weights = weights.shift(2).fillna(0.0)
     gross_returns = (shifted_weights * daily_asset_returns).sum(axis=1)
     daily_returns = (gross_returns - costs).rename("daily_return")
     equity_curve = (1.0 + daily_returns).cumprod().rename("equity")

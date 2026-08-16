@@ -36,8 +36,9 @@ def test_run_backtest_minimal_deterministic_case() -> None:
     )
 
     assert result.weights.loc[pd.Timestamp("2026-01-05"), "A.SH"] == pytest.approx(1.0)
-    assert result.daily_returns.loc[pd.Timestamp("2026-01-06")] == pytest.approx(1.0)
-    assert result.equity_curve.iloc[-1] == pytest.approx(6.0)
+    # T+1 execution: decision 01-05, executed at 01-06 close, held from 01-07.
+    assert result.daily_returns.loc[pd.Timestamp("2026-01-06")] == pytest.approx(0.0)
+    assert result.equity_curve.iloc[-1] == pytest.approx(3.0)
 
 
 def test_run_backtest_charges_turnover_cost() -> None:
@@ -143,3 +144,41 @@ def test_run_backtest_with_example_pipeline(sqlite_source) -> None:
     assert result.weights.shape == synthesized.shape
     assert int((result.weights.sum(axis=1) > 0).sum()) > 0
     assert result.equity_curve.dropna().iloc[-1] > 0
+
+
+def test_run_backtest_no_lookahead_on_rebalance_day() -> None:
+    """V-shape: asset jumps on a rebalance date, pulls back the next day.
+
+    T+1 execution must NOT capture the rebalance-day-to-next-day price gap.
+    Decision on day5 picks A (A jumps to 1.1 that day, pulls back to 1.0 day6).
+    A T-day-close execution would capture the -9% pullback; T+1 must give 0.
+    """
+    dates = pd.date_range("2026-01-05", periods=10, freq="D")
+    a_close = [1.0] * 5 + [1.1] + [1.0] * 4
+    price_data = pd.DataFrame(
+        {
+            "date": list(dates) * 2,
+            "sec": ["A.SH"] * 10 + ["B.SH"] * 10,
+            "open": a_close + [1.0] * 10,
+            "high": a_close + [1.0] * 10,
+            "low": a_close + [1.0] * 10,
+            "close": a_close + [1.0] * 10,
+            "volume": [100] * 20,
+            "amount": [100] * 20,
+        }
+    )
+    # Factor prefers B for days 0-4, switches to A from day5 (so day5 picks A).
+    factor_scores = pd.DataFrame(
+        [[0.0, 1.0]] * 5 + [[1.0, 0.0]] * 5,
+        index=pd.DatetimeIndex(dates, name="date"),
+        columns=["A.SH", "B.SH"],
+    )
+
+    result = run_backtest(
+        price_data,
+        factor_scores,
+        BacktestConfig(top_n=1, max_weight=1.0, transaction_cost_bps=0, rebalance_freq="5d"),
+    )
+
+    # day6: A pulls back 1.1 -> 1.0. With T+1 execution this is not captured.
+    assert result.daily_returns.loc[dates[6]] == pytest.approx(0.0)
