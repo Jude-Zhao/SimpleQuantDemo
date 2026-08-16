@@ -38,8 +38,10 @@ def test_calculate_forward_returns() -> None:
         universe=["A.SH", "B.SH", "C.SH"],
     )
 
-    assert returns.loc[pd.Timestamp("2026-01-01"), "A.SH"] == pytest.approx(0.2)
-    assert returns.loc[pd.Timestamp("2026-01-01"), "B.SH"] == pytest.approx(-0.1)
+    # Forward return measured from execution day (T+1) to T+1+horizon,
+    # aligned with the T+1 backtest convention.
+    assert returns.loc[pd.Timestamp("2026-01-01"), "A.SH"] == pytest.approx(13 / 11 - 1)
+    assert returns.loc[pd.Timestamp("2026-01-01"), "B.SH"] == pytest.approx(17 / 19 - 1)
     assert returns.loc[pd.Timestamp("2026-01-01"), "C.SH"] == pytest.approx(0.0)
     assert np.isnan(returns.loc[pd.Timestamp("2026-01-03"), "A.SH"])
 

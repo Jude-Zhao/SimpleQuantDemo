@@ -16,12 +16,17 @@ def calculate_forward_returns(
     universe: Sequence[str] | None = None,
     price_field: str = "close",
 ) -> pd.DataFrame:
-    """Calculate close[t+horizon] / close[t] - 1 as a date-by-security matrix."""
+    """Calculate close[T+1+horizon] / close[T+1] - 1 as a date-by-security matrix.
+
+    The forward window starts at the execution day (T+1) rather than the signal
+    day T, matching the T+1-execution backtest convention. This avoids crediting
+    a factor with the T->T+1 gap it cannot actually capture in live trading.
+    """
     if horizon <= 0:
         raise ValueError("horizon must be positive.")
 
     close = pivot_price_field(price_data, field=price_field, universe=universe)
-    forward_returns = close.shift(-horizon) / close - 1.0
+    forward_returns = close.shift(-(1 + horizon)) / close.shift(-1) - 1.0
     forward_returns.index.name = "date"
     return forward_returns
 
