@@ -67,6 +67,31 @@ def test_start_etf_sync_creates_task(db):
         assert fetched is not None
 
 
+def test_start_etf_sync_loads_universe_when_no_codes(db):
+    """When sec_codes is None, the active universe should be loaded via db."""
+    fake_universe = [
+        {"sec_code": "510300.SH", "sec_name": "沪深300ETF", "category": "宽基"},
+        {"sec_code": "159915.SZ", "sec_name": "创业板ETF", "category": "宽基"},
+        {"sec_code": "513660.SH", "sec_name": "恒生ETF", "category": ""},
+    ]
+
+    with (
+        patch("webapp.services.sync_service._run_etf_sync"),
+        patch(
+            "webapp.services.sync_service.get_etf_list",
+            return_value=fake_universe,
+        ) as mock_get_etf_list,
+    ):
+        task = start_etf_sync(
+            db=db,
+            start_date="2024-01-02",
+            end_date="2024-01-10",
+        )
+        # get_etf_list must be called with the db session so it returns the universe
+        mock_get_etf_list.assert_called_once_with(db)
+        assert task.total == 3
+
+
 def test_etf_sync_schema(db):
     """Sync service writes correct schema to DB."""
     from webapp.models.market_data import EtfDailyBar

@@ -104,7 +104,7 @@ def start_etf_sync(
     from webapp.models.database import SessionLocal
 
     if sec_codes is None:
-        sec_codes = [item["sec_code"] for item in get_etf_list()]
+        sec_codes = [item["sec_code"] for item in get_etf_list(db)]
 
     task_type = SyncType.ETF_DAILY if period in ("daily", "d") else SyncType.ETF_MINUTE
     task = create_task(task_type)
