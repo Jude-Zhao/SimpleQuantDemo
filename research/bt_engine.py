@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import bt
 import pandas as pd
 
+from core.calendar import generate_rebalance_dates
+
 
 @dataclass(frozen=True)
 class BTBacktestResult:
@@ -21,6 +23,24 @@ class BTBacktestResult:
     daily_returns: pd.Series
     weights: pd.DataFrame
     bt_result: bt.backtest.Result | None = None
+
+
+def _execution_dates(close_index, rebalance_freq: str) -> list:
+    """Rebalance (decision) dates shifted forward one trading day.
+
+    Decision happens on the rebalance date T; execution happens at the next
+    trading day T+1's close, so the signal price (T close) is never the
+    execution price. Returns execution dates that fall inside ``close_index``.
+    """
+    decision = generate_rebalance_dates(
+        trading_dates=pd.DatetimeIndex(close_index),
+        rebalance_freq=rebalance_freq,
+        rebalance_day=0,
+    )
+    index = pd.DatetimeIndex(close_index)
+    pos = index.get_indexer(decision)
+    execution_positions = [p + 1 for p in pos if 0 <= p + 1 < len(index)]
+    return [index[p] for p in execution_positions]
 
 
 def run_bt_backtest(
@@ -43,18 +63,17 @@ def run_bt_backtest(
             f"rebalance_freq must be 'weekly', 'monthly', or '5d', got {rebalance_freq!r}"
         )
 
-    if rebalance_freq == "weekly":
-        trigger = bt.algos.RunWeekly()
-    elif rebalance_freq == "monthly":
-        trigger = bt.algos.RunMonthly()
-    else:
-        trigger = bt.algos.RunEveryNPeriods(5)
+    # T+1 execution: decide weights on rebalance date T, execute at T+1 close,
+    # so the signal close (T) is never the execution close (T+1) — no lookahead.
+    filled = target_weights.ffill().fillna(0.0).astype(float)
+    execution_dates = _execution_dates(close.index, rebalance_freq)
+    trigger = bt.algos.RunOnDate(*execution_dates)
     strategy = bt.Strategy(
         name,
         algos=[
             trigger,
             bt.algos.SelectAll(),
-            bt.algos.WeighTarget(target_weights.astype(float)),
+            bt.algos.WeighTarget(filled),
             bt.algos.Rebalance(),
         ],
     )

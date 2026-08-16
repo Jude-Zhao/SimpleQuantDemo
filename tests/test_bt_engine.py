@@ -64,3 +64,31 @@ def test_5d_produces_different_nav_from_monthly() -> None:
     five = run_bt_backtest(close, weights, rebalance_freq="5d")
     monthly = run_bt_backtest(close, weights, rebalance_freq="monthly")
     assert not five.equity_curve.equals(monthly.equity_curve)
+
+
+def test_no_lookahead_on_rebalance_day() -> None:
+    """bt engine must execute at decision-day+1 close, not decision-day close.
+
+    A jumps to 1.1 on the rebalance date (index 5) and pulls back to 1.0 the
+    next day (index 6). If bt executed at the decision-day close, the -9%
+    pullback would be captured. T+1 execution must give 0 on index 6.
+    """
+    dates = pd.bdate_range("2024-01-01", periods=10)
+    secs = ["A", "B"]
+    close = pd.DataFrame(
+        data={
+            "A": [1.0] * 5 + [1.1] + [1.0] * 4,
+            "B": [1.0] * 10,
+        },
+        index=dates,
+        columns=secs,
+    )
+    # Decision dates: index 0 -> B, index 5 -> A. NaN elsewhere; engine ffill's.
+    tw = pd.DataFrame(float("nan"), index=dates, columns=secs)
+    tw.loc[dates[0], "B"] = 1.0
+    tw.loc[dates[5], "A"] = 1.0
+
+    res = run_bt_backtest(close, tw, rebalance_freq="5d")
+
+    # index 6: A pulls back 1.1 -> 1.0. T+1 execution -> 0.
+    assert res.daily_returns.loc[dates[6]] == pytest.approx(0.0)
