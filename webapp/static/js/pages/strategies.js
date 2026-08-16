@@ -353,17 +353,16 @@ async function runStrategy() {
 
         // Rebuild the summary-shaped object from the persisted result_summary.
         const rs = detail.result_summary || {};
-        const weights = rs.weights || {};
-        const wDates = Object.keys(weights);
         const summary = {
             status: detail.status,
             error_msg: detail.error_msg,
             metrics: rs.metrics || {},
             nav_series: rs.equity_curve || {},
-            weights: wDates.length ? weights[wDates[wDates.length - 1]] : {},
+            latest_weights: rs.latest_weights || {},
+            latest_data_date: rs.latest_data_date || null,
             constraint_violations: rs.constraint_violations || [],
         };
-        renderRunSummary(resultEl, summary);
+        await renderRunSummary(resultEl, summary);
         renderConstraintCheck(constraintPanel, summary);
         loadRuns();
     } catch (e) {
@@ -392,7 +391,7 @@ function renderConstraintCheck(panel, summary) {
     }
 }
 
-function renderRunSummary(el, summary) {
+async function renderRunSummary(el, summary) {
     if (summary.status !== "success") {
         el.innerHTML = `<div class="alert alert-error">运行失败: ${Utils.escapeHtml(summary.error_msg || "未知错误")}</div>`;
         return;
@@ -419,13 +418,17 @@ function renderRunSummary(el, summary) {
                 <div id="nav-chart" class="chart-sm"></div>
             </div>
             <div class="col-6" style="grid-column: span 6;">
-                <div class="card-title card-title-sm">最新持仓权重</div>
-                <div id="weights-chart" class="chart-sm"></div>
+                <div class="card-title card-title-sm">${Utils.escapeHtml(
+                    summary.latest_data_date
+                        ? `持仓建议生成日期：截至 ${summary.latest_data_date}`
+                        : "最新持仓建议"
+                )}</div>
+                <div id="latest-holdings" class="holdings-table-wrap"></div>
             </div>
         </div>`;
 
     renderNavChart(summary.nav_series);
-    renderWeightsChart(summary.weights);
+    await renderLatestHoldings(summary.latest_weights);
 }
 
 function renderNavChart(navSeries) {
@@ -463,37 +466,43 @@ function renderNavChart(navSeries) {
     }));
 }
 
-function renderWeightsChart(weights) {
-    const el = document.getElementById("weights-chart");
+let universeNameMap = null;
+
+async function ensureUniverseNameMap() {
+    if (universeNameMap) return universeNameMap;
+    const list = await API.getUniverse().catch(() => []);
+    universeNameMap = {};
+    list.forEach((u) => {
+        universeNameMap[u.sec_code] = u.sec_name;
+    });
+    return universeNameMap;
+}
+
+async function renderLatestHoldings(weights) {
+    const el = document.getElementById("latest-holdings");
     if (!el) return;
-    const codes = Object.keys(weights);
-    if (!codes.length) {
-        el.innerHTML = `<div class="empty-state"><div class="empty-title">无持仓数据</div></div>`;
+    const nameMap = await ensureUniverseNameMap();
+    const rows = Object.entries(weights)
+        .map(([code, w]) => ({ code, name: nameMap[code] || code, w }))
+        .sort((a, b) => b.w - a.w);
+
+    if (!rows.length) {
+        el.innerHTML = `<div class="empty-state"><div class="empty-title">暂无持仓</div></div>`;
         return;
     }
-    Charts.render(el, () => ({
-        tooltip: {
-            trigger: "axis",
-            axisPointer: { type: "shadow" },
-            className: "chart-tooltip-custom",
-            formatter: (params) => {
-                const p = params[0];
-                return `<div class="tt-title">${Utils.escapeHtml(p.name)}</div>
-                    <div class="tt-row"><span>权重</span><span class="tt-value">${Utils.formatPct(p.value)}</span></div>`;
-            },
-        },
-        grid: { left: 80, right: 24, top: 16, bottom: 40 },
-        xAxis: { type: "category", data: codes, axisLabel: { rotate: 30 } },
-        yAxis: { type: "value", axisLabel: { formatter: (v) => (v * 100).toFixed(0) + "%" } },
-        series: [{
-            type: "bar",
-            data: Object.values(weights),
-            barMaxWidth: 28,
-            itemStyle: { color: Charts.semanticColor("up"), opacity: 0.9 },
-            label: { show: true, position: "top", formatter: (p) => (p.value * 100).toFixed(0) + "%", fontSize: 10 },
-        }],
-        extra: {},
-    }));
+    el.innerHTML = `
+        <div class="table-wrap">
+            <table class="table">
+                <thead><tr><th>代码</th><th>名称</th><th>持仓比例</th></tr></thead>
+                <tbody>${rows.map((r) => `
+                    <tr>
+                        <td class="mono">${Utils.escapeHtml(r.code)}</td>
+                        <td>${Utils.escapeHtml(r.name)}</td>
+                        <td>${Utils.formatPct(r.w)}</td>
+                    </tr>`).join("")}
+                </tbody>
+            </table>
+        </div>`;
 }
 
 async function loadRuns() {
