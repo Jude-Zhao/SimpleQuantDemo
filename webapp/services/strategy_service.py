@@ -21,7 +21,9 @@ from sqlalchemy.orm import Session
 from core.factors.config import categories_to_dict, list_factor_categories
 from core.optimization import (
     CategoryConstraint as CoreCategoryConstraint,
+    EqualWeightOptimizer,
     OptimizationConstraints as CoreOptimizationConstraints,
+    ScoreWeightedOptimizer,
     validate_constraints,
 )
 from research.backtest import BacktestConfig, BacktestResult, run_backtest
@@ -276,17 +278,19 @@ def _execute_run(run_id: int) -> None:
 
         # Solve the strategy
         if strategy_type == "faa":
-            result, violations = _run_faa(
+            result, violations, latest_weights, latest_data_date = _run_faa(
                 params, price_data, universe_codes, classifications, constraints
             )
         else:  # eaa
-            result, violations = _run_eaa(
+            result, violations, latest_weights, latest_data_date = _run_eaa(
                 params, price_data, universe_codes, classifications, constraints
             )
 
         # Persist success
         run.status = "success"
-        run.result_summary = _result_to_dict(result, violations)
+        run.result_summary = _result_to_dict(
+            result, violations, latest_weights, latest_data_date
+        )
         run.completed_at = utc_now()
         db.commit()
     except Exception as exc:  # noqa: BLE001
@@ -318,7 +322,7 @@ def _run_faa(
     universe: list[str],
     classifications: dict[str, dict[str, str]],
     constraints: CoreOptimizationConstraints,
-) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
+) -> tuple[BacktestResult, list[ConstraintViolationItem], dict[str, float], str]:
     """FAA strategy: weighted sum of normalized category scores, Top-N equal weight."""
     top_n = int(params.get("top_n", 5))
     rebalance_freq = params.get("rebalance_freq", "5d")
@@ -327,6 +331,9 @@ def _run_faa(
     categories = list_factor_categories()
     category_scores = build_category_scores(price_data, universe, categories)
     composite = faa_composite(category_scores, class_weights)
+    latest_weights, latest_data_date = _latest_recommendation(
+        composite, EqualWeightOptimizer(top_n=top_n, max_weight=1.0, min_weight=0.0)
+    )
 
     run_result = run_backtest(
         price_data=price_data,
@@ -345,7 +352,7 @@ def _run_faa(
         classifications,
         constraints,
     )
-    return run_result, violations
+    return run_result, violations, latest_weights, latest_data_date
 
 
 def _run_eaa(
@@ -354,7 +361,7 @@ def _run_eaa(
     universe: list[str],
     classifications: dict[str, dict[str, str]],
     constraints: CoreOptimizationConstraints,
-) -> tuple[BacktestResult, list[ConstraintViolationItem]]:
+) -> tuple[BacktestResult, list[ConstraintViolationItem], dict[str, float], str]:
     """EAA strategy: power-product of normalized category scores, score-weighted Top-N."""
     top_n = int(params.get("top_n", 5))
     rebalance_freq = params.get("rebalance_freq", "5d")
@@ -364,6 +371,9 @@ def _run_eaa(
     categories = list_factor_categories()
     category_scores = build_category_scores(price_data, universe, categories)
     composite = eaa_composite(category_scores, exponents, beta)
+    latest_weights, latest_data_date = _latest_recommendation(
+        composite, ScoreWeightedOptimizer(top_n=top_n, max_weight=1.0, min_weight=0.0)
+    )
 
     run_result = run_backtest(
         price_data=price_data,
@@ -382,7 +392,24 @@ def _run_eaa(
         classifications,
         constraints,
     )
-    return run_result, violations
+    return run_result, violations, latest_weights, latest_data_date
+
+
+def _latest_recommendation(
+    composite: pd.DataFrame,
+    optimizer,
+) -> tuple[dict[str, float], str]:
+    """Top-N holdings from the most recent factor date (T).
+
+    Based on the latest (database-latest trading day) factor scores, assuming
+    execution at the T+1 close. Returns ``({sec_code: weight}, date_str)`` with
+    only positive-weight holdings.
+    """
+    latest = composite.index[-1]
+    score_row = composite.loc[latest].dropna()
+    weights = optimizer.optimize(score_row)
+    holdings = {k: float(v) for k, v in weights.items() if v > 0}
+    return holdings, str(pd.Timestamp(latest).date())
 
 
 def _validate_portfolio(
@@ -410,6 +437,8 @@ def _validate_portfolio(
 def _result_to_dict(
     result: BacktestResult,
     violations: list[ConstraintViolationItem] | None = None,
+    latest_weights: dict[str, float] | None = None,
+    latest_data_date: str | None = None,
 ) -> dict[str, Any]:
     """Serialize a BacktestResult into a JSON-safe dict."""
     return {
@@ -446,6 +475,8 @@ def _result_to_dict(
         "rebalance_dates": [
             str(d.date()) for d in result.rebalance_dates
         ],
+        "latest_weights": latest_weights or {},
+        "latest_data_date": latest_data_date,
     }
 
 
