@@ -19,14 +19,14 @@ function renderFactors(container) {
         <div class="card" style="padding:16px 20px;">
             <div class="flex-between">
                 <div class="form-group" style="margin:0;">
-                    <label style="margin-bottom:4px;">调仓窗口</label>
+                    <label style="margin-bottom:4px;">前瞻期（持仓日数）</label>
                     <select id="factor-horizon" class="form-select" style="width:auto;">
                         <option value="5">5 个交易日</option>
                         <option value="10">10 个交易日</option>
                         <option value="20">20 个交易日</option>
                     </select>
                 </div>
-                <div class="text-muted" style="font-size:12px;">选择左侧因子后点击"计算因子"</div>
+                <div class="text-muted" style="font-size:12px;">IC / RankIC 衡量因子对 T+1 起未来 N 个交易日收益的预测力</div>
             </div>
         </div>
 
