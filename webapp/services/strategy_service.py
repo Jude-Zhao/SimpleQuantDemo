@@ -46,7 +46,12 @@ from webapp.services.universe_service import get_universe_codes, seed_default_un
 
 # Default date range for backtests when no explicit range is provided.
 DEFAULT_START = "2024-01-01"
-DEFAULT_END = pd.Timestamp.now().strftime("%Y-%m-%d")
+
+
+def default_end_date() -> str:
+    """Default end date for backtests/rankings, evaluated per call so a long-lived
+    process always tracks the current date instead of freezing at startup."""
+    return pd.Timestamp.now().strftime("%Y-%m-%d")
 
 # Factor warm-up window (natural days). Core factors need up to 60 trading days
 # of look-back history (momentum_60_reversal / low_vol_60 / ma60_slope_reversal);
@@ -210,7 +215,7 @@ def submit_strategy(
         )
 
     start_date = request.start_date or DEFAULT_START
-    end_date = request.end_date or DEFAULT_END
+    end_date = request.end_date or default_end_date()
     params = request.params or {}
 
     with _strategy_run_lock:
@@ -275,7 +280,7 @@ def _execute_run(run_id: int) -> None:
         strategy_type = run.strategy_type
         params = run.params or {}
         start_date = run.start_date or DEFAULT_START
-        end_date = run.end_date or DEFAULT_END
+        end_date = run.end_date or default_end_date()
         universe_codes = run.universe_snapshot or []
 
         # Fetch data: load a warm-up window before ``start_date`` so factors

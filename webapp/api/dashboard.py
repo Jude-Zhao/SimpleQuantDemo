@@ -17,7 +17,7 @@ from webapp.services.data_service import get_etf_price, get_etf_list
 from webapp.services.eaa_faa import build_category_factors, category_score_from_matrices
 from webapp.services.factor_service import list_factor_categories_meta
 from webapp.services.universe_service import list_active_universe
-from webapp.services.strategy_service import DEFAULT_END, DEFAULT_START
+from webapp.services.strategy_service import DEFAULT_START, default_end_date
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -127,7 +127,7 @@ def get_factor_ranking(db: Session = Depends(get_db)):
     if not universe:
         return []
 
-    price_data = get_etf_price(db, universe, DEFAULT_START, DEFAULT_END)
+    price_data = get_etf_price(db, universe, DEFAULT_START, default_end_date())
     if price_data.empty:
         return []
 
@@ -215,7 +215,7 @@ def get_returns_ranking(
     universe = [e["sec_code"] for e in etfs]
     name_map = {e["sec_code"]: e["sec_name"] for e in etfs}
 
-    price_data = get_etf_price(db, universe, DEFAULT_START, DEFAULT_END)
+    price_data = get_etf_price(db, universe, DEFAULT_START, default_end_date())
     if price_data.empty:
         return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
 
