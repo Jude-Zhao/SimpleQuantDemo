@@ -68,8 +68,12 @@ def _build_meta() -> list[StrategyMeta]:
     non_empty = [c for c in cats if not c["is_empty"]]
     empty_keys = [c["key"] for c in cats if c["is_empty"]]
 
-    default_weights = {c["key"]: 1.0 / len(non_empty) for c in non_empty}
-    default_exponents = {c["key"]: 1.0 for c in non_empty}
+    # 默认参数来自 research/tune_strategy_params.py 网格搜索
+    # （区间 2021-01-04~2026-08-14，5d 调仓，1bp，top_n=5）。
+    # FAA：动量0.20/反转0.30/波动0.25/量能0.25；EAA：α 0.5/1/1/1.25，β 0.5。
+    default_weights = {"momentum": 0.20, "reversal": 0.30, "volatility": 0.25, "volume": 0.25}
+    default_exponents = {"momentum": 0.5, "reversal": 1.0, "volatility": 1.0, "volume": 1.25}
+    default_beta = 0.5
 
     # Preserve forward order for the slider rendering.
     slider_options = [{"key": c["key"], "display_name": c["display_name"]} for c in cats]
@@ -99,7 +103,7 @@ def _build_meta() -> list[StrategyMeta]:
                 StrategyParamSchema(name="top_n", type="int", default=5, min=3, max=9, step=2, label="持仓数量 (Top N)"),
                 StrategyParamSchema(name="rebalance_freq", type="str", default="5d", label="调仓频率", options=["weekly", "monthly", "5d"]),
                 StrategyParamSchema(name="exponents", type="category_exponents", default=default_exponents, label="类缩放系数 α", options=slider_options),
-                StrategyParamSchema(name="beta", type="float", default=1.0, min=0.1, max=5.0, step=0.1, label="整体缩放系数 β"),
+                StrategyParamSchema(name="beta", type="float", default=default_beta, min=0.1, max=5.0, step=0.1, label="整体缩放系数 β"),
             ],
         ),
     ]
@@ -393,7 +397,7 @@ def _run_eaa(
     top_n = int(params.get("top_n", 5))
     rebalance_freq = params.get("rebalance_freq", "5d")
     exponents = params.get("exponents", {}) or {}
-    beta = float(params.get("beta", 1.0))
+    beta = float(params.get("beta", 0.5))
 
     categories = list_factor_categories()
     category_scores = build_category_scores(full_price_data, universe, categories)

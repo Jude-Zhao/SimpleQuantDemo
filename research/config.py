@@ -39,9 +39,21 @@ class ResearchConfig:
 
     # FAA / EAA category-level parameters. Empty dicts default to equal
     # weight / exponent across all non-empty categories.
-    class_weights: dict[str, float] = field(default_factory=dict)
-    exponents: dict[str, float] = field(default_factory=dict)
-    beta: float = 1.0
+    # 默认值来自 research/tune_strategy_params.py 网格搜索（区间
+    # 2021-01-04~2026-08-14，5d 调仓，1bp，top_n=5）：
+    #   FAA：动量0.20/反转0.30/波动0.25/量能0.25
+    #   EAA：α 0.5/1/1/1.25，β 0.5
+    class_weights: dict[str, float] = field(
+        default_factory=lambda: {
+            "momentum": 0.20, "reversal": 0.30, "volatility": 0.25, "volume": 0.25,
+        }
+    )
+    exponents: dict[str, float] = field(
+        default_factory=lambda: {
+            "momentum": 0.5, "reversal": 1.0, "volatility": 1.0, "volume": 1.25,
+        }
+    )
+    beta: float = 0.5
 
     # Factor evaluation parameters (independent research output, not used to
     # drive the composite strategy).
