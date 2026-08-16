@@ -48,6 +48,13 @@ from webapp.services.universe_service import get_universe_codes, seed_default_un
 DEFAULT_START = "2024-01-01"
 DEFAULT_END = pd.Timestamp.now().strftime("%Y-%m-%d")
 
+# Factor warm-up window (natural days). Core factors need up to 60 trading days
+# of look-back history (momentum_60_reversal / low_vol_60 / ma60_slope_reversal);
+# 250 natural days ≈ 170 trading days leaves comfortable margin. Warm-up data is
+# used only to compute factor scores, the backtest still starts at ``start_date``
+# so rebalance dates are not shifted by the warm-up period.
+_WARMUP_DAYS = 250
+
 _TOP_N_OPTIONS = [3, 5, 7, 9]
 
 
@@ -267,10 +274,19 @@ def _execute_run(run_id: int) -> None:
         end_date = run.end_date or DEFAULT_END
         universe_codes = run.universe_snapshot or []
 
-        # Fetch data
-        price_data = get_etf_price(db, universe_codes, start_date, end_date)
-        if price_data.empty:
+        # Fetch data: load a warm-up window before ``start_date`` so factors
+        # have look-back history, then clip to the backtest range.
+        warmup_start = (
+            pd.Timestamp(start_date) - pd.Timedelta(days=_WARMUP_DAYS)
+        ).strftime("%Y-%m-%d")
+        full_price = get_etf_price(db, universe_codes, warmup_start, end_date)
+        if full_price.empty:
             raise ValueError("未获取到任何行情数据")
+        price_data = full_price[
+            pd.to_datetime(full_price["date"]) >= pd.Timestamp(start_date)
+        ].reset_index(drop=True)
+        if price_data.empty:
+            raise ValueError("回测区间无行情数据")
 
         # Build classifications from active rules
         classifications = _build_classifications(db)
@@ -279,11 +295,11 @@ def _execute_run(run_id: int) -> None:
         # Solve the strategy
         if strategy_type == "faa":
             result, violations, latest_weights, latest_data_date = _run_faa(
-                params, price_data, universe_codes, classifications, constraints
+                params, price_data, full_price, universe_codes, classifications, constraints
             )
         else:  # eaa
             result, violations, latest_weights, latest_data_date = _run_eaa(
-                params, price_data, universe_codes, classifications, constraints
+                params, price_data, full_price, universe_codes, classifications, constraints
             )
 
         # Persist success
@@ -319,17 +335,23 @@ def _build_classifications(db: Session) -> dict[str, dict[str, str]]:
 def _run_faa(
     params: dict[str, Any],
     price_data: pd.DataFrame,
+    full_price_data: pd.DataFrame,
     universe: list[str],
     classifications: dict[str, dict[str, str]],
     constraints: CoreOptimizationConstraints,
 ) -> tuple[BacktestResult, list[ConstraintViolationItem], dict[str, float], str]:
-    """FAA strategy: weighted sum of normalized category scores, Top-N equal weight."""
+    """FAA strategy: weighted sum of normalized category scores, Top-N equal weight.
+
+    ``full_price_data`` includes the warm-up window and is used for factor
+    computation; ``price_data`` is the backtest range only (the engine derives
+    rebalance dates from it, so the warm-up period never shifts the schedule).
+    """
     top_n = int(params.get("top_n", 5))
     rebalance_freq = params.get("rebalance_freq", "5d")
     class_weights = params.get("class_weights", {}) or {}
 
     categories = list_factor_categories()
-    category_scores = build_category_scores(price_data, universe, categories)
+    category_scores = build_category_scores(full_price_data, universe, categories)
     composite = faa_composite(category_scores, class_weights)
     latest_weights, latest_data_date = _latest_recommendation(
         composite, EqualWeightOptimizer(top_n=top_n, max_weight=1.0, min_weight=0.0)
@@ -358,18 +380,23 @@ def _run_faa(
 def _run_eaa(
     params: dict[str, Any],
     price_data: pd.DataFrame,
+    full_price_data: pd.DataFrame,
     universe: list[str],
     classifications: dict[str, dict[str, str]],
     constraints: CoreOptimizationConstraints,
 ) -> tuple[BacktestResult, list[ConstraintViolationItem], dict[str, float], str]:
-    """EAA strategy: power-product of normalized category scores, score-weighted Top-N."""
+    """EAA strategy: power-product of normalized category scores, score-weighted Top-N.
+
+    ``full_price_data`` includes the warm-up window and is used for factor
+    computation; ``price_data`` is the backtest range only.
+    """
     top_n = int(params.get("top_n", 5))
     rebalance_freq = params.get("rebalance_freq", "5d")
     exponents = params.get("exponents", {}) or {}
     beta = float(params.get("beta", 1.0))
 
     categories = list_factor_categories()
-    category_scores = build_category_scores(price_data, universe, categories)
+    category_scores = build_category_scores(full_price_data, universe, categories)
     composite = eaa_composite(category_scores, exponents, beta)
     latest_weights, latest_data_date = _latest_recommendation(
         composite, ScoreWeightedOptimizer(top_n=top_n, max_weight=1.0, min_weight=0.0)
