@@ -7,6 +7,7 @@ from typing import Sequence
 import pandas as pd
 
 from core.data.base import DataSource
+from core.data.default_universe import DEFAULT_ACTIVE_CODES
 
 
 class BaostockDataSource(DataSource):
@@ -181,20 +182,10 @@ class BaostockDataSource(DataSource):
         return df.sort_index()
 
     def get_universe(self) -> list[str]:
-        """Return a default list of ETF codes.
+        """Return the shared default ETF universe.
 
-        Baostock does not have an ETF listing API, so we return a
-        curated list of major ETFs.
+        Baostock does not have an ETF listing API, so ``get_universe`` only
+        supports the curated default list (same single source as AkShare /
+        the webapp seed pool — see core.data.default_universe).
         """
-        return [
-            "510300.SH",  # 沪深300ETF
-            "510500.SH",  # 中证500ETF
-            "159915.SZ",  # 创业板ETF
-            "518880.SH",  # 黄金ETF
-            "511010.SH",  # 国债ETF
-            "510050.SH",  # 上证50ETF
-            "159919.SZ",  # 沪深300ETF（嘉实）
-            "510180.SH",  # 上证180ETF
-            "159901.SZ",  # 深100ETF
-            "510880.SH",  # 红利ETF
-        ]
+        return list(DEFAULT_ACTIVE_CODES)

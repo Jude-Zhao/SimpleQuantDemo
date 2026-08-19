@@ -22,7 +22,7 @@ def test_get_universe():
     assert len(universe) >= 5
     assert "510300.SH" in universe
     assert "510500.SH" in universe
-    assert "159915.SZ" in universe
+    assert "588000.SH" in universe
 
 
 def test_get_macro_factors_money_supply():

@@ -4,22 +4,18 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from core.data.default_universe import DEFAULT_UNIVERSE_ITEMS
 from webapp.models.database import utc_now
 from webapp.models.universe import UniverseItem
 from webapp.schemas.universe import UniverseItemCreate
 
 
+# Single default-universe source lives in core.data.default_universe; this only
+# wraps it into the webapp seed schema. meta here is a redundant hint — the live
+# category is decided by the classification rule engine (classify_universe).
 DEFAULT_UNIVERSE = [
-    UniverseItemCreate(sec_code="510300.SH", sec_name="沪深300ETF", meta={"category": "宽基"}),
-    UniverseItemCreate(sec_code="510500.SH", sec_name="中证500ETF", meta={"category": "宽基"}),
-    UniverseItemCreate(sec_code="159915.SZ", sec_name="创业板ETF", meta={"category": "宽基"}),
-    UniverseItemCreate(sec_code="518880.SH", sec_name="黄金ETF", meta={"category": "商品"}),
-    UniverseItemCreate(sec_code="511010.SH", sec_name="国债ETF", meta={"category": "债券"}),
-    UniverseItemCreate(sec_code="510050.SH", sec_name="上证50ETF", meta={"category": "宽基"}),
-    UniverseItemCreate(sec_code="510880.SH", sec_name="红利ETF", meta={"category": "策略"}),
-    UniverseItemCreate(sec_code="159901.SZ", sec_name="深100ETF", meta={"category": "宽基"}),
-    UniverseItemCreate(sec_code="510180.SH", sec_name="上证180ETF", meta={"category": "宽基"}),
-    UniverseItemCreate(sec_code="159919.SZ", sec_name="沪深300ETF(嘉实)", meta={"category": "宽基"}),
+    UniverseItemCreate(sec_code=code, sec_name=name, meta={"category": cat})
+    for code, name, cat in DEFAULT_UNIVERSE_ITEMS
 ]
 
 

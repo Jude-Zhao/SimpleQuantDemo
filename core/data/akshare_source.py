@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover
     requests = None
 
 from core.data.base import DataSource
+from core.data.default_universe import DEFAULT_ACTIVE_CODES
 
 
 class AkShareDataUnavailable(RuntimeError):
@@ -492,20 +493,10 @@ class AkShareDataSource(DataSource):
     # ── Universe ─────────────────────────────────────────────
 
     def get_universe(self) -> list[str]:
-        """Return default ETF universe (same curated list as Baostock)."""
+        """Return the shared default ETF universe (single source as Baostock /
+        the webapp seed pool — see core.data.default_universe)."""
         if self._universe_cache is not None:
             return self._universe_cache
-        self._universe_cache = [
-            "510300.SH",  # 沪深300ETF
-            "510500.SH",  # 中证500ETF
-            "159915.SZ",  # 创业板ETF
-            "518880.SH",  # 黄金ETF
-            "511010.SH",  # 国债ETF
-            "510050.SH",  # 上证50ETF
-            "159919.SZ",  # 沪深300ETF（嘉实）
-            "510180.SH",  # 上证180ETF
-            "159901.SZ",  # 深100ETF
-            "510880.SH",  # 红利ETF
-        ]
+        self._universe_cache = list(DEFAULT_ACTIVE_CODES)
         return self._universe_cache
 
