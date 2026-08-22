@@ -1,0 +1,1 @@
+"""MACD histogram factor (分类: 动量)."""

@@ -1,0 +1,1 @@
+"""60-day skewness reversal factor (分类: 反转)."""

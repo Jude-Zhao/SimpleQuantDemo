@@ -1,0 +1,1 @@
+"""20-day psychological line factor (分类: 量能)."""

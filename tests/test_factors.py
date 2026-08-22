@@ -5,11 +5,11 @@ import pandas as pd
 import pytest
 
 from core.factors import (
-    AroonDiffFactor,
-    LowVol60Factor,
-    MA60SlopeReversalFactor,
-    Momentum60ReversalFactor,
-    MoneyFlow20Factor,
+    Drawdown120Factor,
+    MACDHistFactor,
+    MFIFactor,
+    PSY20Factor,
+    Skewness60ReversalFactor,
 )
 from core.factors.exceptions import FactorValidationError
 from core.factors.utils import pivot_price_field, validate_factor_panel
@@ -67,23 +67,24 @@ def test_pivot_price_field_keeps_universe_order() -> None:
     assert matrix.loc[pd.Timestamp("2026-01-03"), "510300.SH"] == 12
 
 
-def test_momentum_60_reversal_formula() -> None:
-    factor = Momentum60ReversalFactor().build(
-        _long_price_data(), _empty_macro(), _universe()
+def test_psy20_formula() -> None:
+    factor = PSY20Factor().build(
+        _long_price_data(n=80), _empty_macro(), _universe()
     )
-    close = pivot_price_field(_long_price_data(), universe=_universe())
-    expected = -close.pct_change(periods=60, fill_method=None)
+    close = pivot_price_field(_long_price_data(n=80), universe=_universe())
+    ret = close.pct_change(fill_method=None)
+    expected = (ret > 0.0).where(ret.notna()).rolling(20).mean()
 
     pd.testing.assert_frame_equal(factor, expected)
 
 
-def test_ma60_slope_reversal_formula() -> None:
-    factor = MA60SlopeReversalFactor().build(
-        _long_price_data(), _empty_macro(), _universe()
+def test_drawdown_120_formula() -> None:
+    factor = Drawdown120Factor().build(
+        _long_price_data(n=80), _empty_macro(), _universe()
     )
-    close = pivot_price_field(_long_price_data(), universe=_universe())
-    ma60 = close.rolling(60).mean()
-    expected = -(ma60 / ma60.shift(20) - 1.0)
+    close = pivot_price_field(_long_price_data(n=80), universe=_universe())
+    dd = close / close.cummax() - 1.0
+    expected = dd.rolling(120, min_periods=1).min()
 
     pd.testing.assert_frame_equal(factor, expected)
 
@@ -107,15 +108,15 @@ def test_builtin_factors_build_on_example_data(sqlite_source) -> None:
     close = pivot_price_field(price_data, universe=universe)
 
     factors = {
-        AroonDiffFactor().name: AroonDiffFactor().build(price_data, macro_data, universe),
-        Momentum60ReversalFactor().name: Momentum60ReversalFactor().build(
+        MACDHistFactor().name: MACDHistFactor().build(price_data, macro_data, universe),
+        Skewness60ReversalFactor().name: Skewness60ReversalFactor().build(
             price_data, macro_data, universe
         ),
-        MA60SlopeReversalFactor().name: MA60SlopeReversalFactor().build(
+        MFIFactor().name: MFIFactor().build(price_data, macro_data, universe),
+        PSY20Factor().name: PSY20Factor().build(price_data, macro_data, universe),
+        Drawdown120Factor().name: Drawdown120Factor().build(
             price_data, macro_data, universe
         ),
-        LowVol60Factor().name: LowVol60Factor().build(price_data, macro_data, universe),
-        MoneyFlow20Factor().name: MoneyFlow20Factor().build(price_data, macro_data, universe),
     }
 
     validate_factor_panel(factors, universe)

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
-from core.factors import AroonDiffFactor, LowVol60Factor
+from core.factors import MACDHistFactor, Drawdown120Factor
 from core.synthesis import ICIRWeightedSynthesizer, calculate_decayed_icir_score
 from core.synthesis.exceptions import SynthesisError
 
@@ -112,8 +112,8 @@ def test_synthesis_pipeline_with_example_data(sqlite_source) -> None:
     )
 
     factor_panel = {
-        "momentum_5": AroonDiffFactor().build(price_data, macro_data, universe),
-        "volatility_20": LowVol60Factor().build(price_data, macro_data, universe),
+        "momentum_5": MACDHistFactor().build(price_data, macro_data, universe),
+        "volatility_20": Drawdown120Factor().build(price_data, macro_data, universe),
     }
     forward_returns = calculate_forward_returns(price_data, horizon=5, universe=universe)
     icir_data = {

@@ -28,12 +28,12 @@ def test_resolve_custom_research_factor() -> None:
 
 
 def test_resolve_falls_back_to_core() -> None:
-    cls = resolve_factor_class("aroon_diff")
+    cls = resolve_factor_class("macd_hist")
     assert cls is not None
-    assert cls.__name__ == "AroonDiffFactor"
+    assert cls.__name__ == "MACDHistFactor"
 
 
-def test_load_research_categories_returns_unmigrated_factors() -> None:
+def test_load_research_categories_keeps_all_declared() -> None:
     cats = load_research_categories()
     keys = [c.key for c in cats]
     assert "momentum" in keys
@@ -41,8 +41,11 @@ def test_load_research_categories_returns_unmigrated_factors() -> None:
     assert "volatility" in keys
     assert "volume" in keys
     names = {f.name for c in cats for f in c.factors}
-    assert "macd_hist" in names  # unmigrated research factor
+    # 已迁移到 core 的因子仍可从 research 分类配置解析（core fallback）
+    assert "macd_hist" in names
     assert "mfi" in names
+    # 仍留在 research 池的因子
+    assert "reversal_bias5" in names
 
 
 def test_protocol_migration_consistency(sqlite_source) -> None:

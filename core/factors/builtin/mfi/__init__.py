@@ -1,0 +1,1 @@
+"""14-day Money Flow Index factor (分类: 量能)."""

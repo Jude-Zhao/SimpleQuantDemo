@@ -10,6 +10,8 @@ from core.factors.registry import (
     list_factor_names,
 )
 
+MIGRATED = {"macd_hist", "skewness_60_reversal", "mfi", "psy20", "drawdown_120"}
+
 
 def _long_price_data(n: int = 70) -> pd.DataFrame:
     """Monotonically increasing close, two securities, with volume."""
@@ -31,41 +33,56 @@ def _long_price_data(n: int = 70) -> pd.DataFrame:
 def test_discover_factors():
     discover_factors()
     names = list_factor_names()
-    assert {"aroon_diff", "momentum_60_reversal", "ma60_slope_reversal", "low_vol_60", "money_flow_20"}.issubset(names)
+    assert MIGRATED.issubset(names)
 
 
 def test_get_factor_class_no_params():
-    cls = get_factor_class("aroon_diff")
+    cls = get_factor_class("macd_hist")
     assert cls is not None
     factor = cls()
-    assert factor.name == "aroon_diff"
+    assert factor.name == "macd_hist"
 
 
-def test_momentum_60_reversal_is_negated():
-    """60-day momentum reversal output equals -pct_change(60)."""
-    cls = get_factor_class("momentum_60_reversal")
+def test_psy20_formula():
+    """20-day psychological line equals mean(ret>0) over a 20-day window."""
+    cls = get_factor_class("psy20")
     assert cls is not None
     factor = cls()
-    prices = _long_price_data()
+    prices = _long_price_data(n=80)
     result = factor.build(prices, pd.DataFrame(), ["A", "B"])
     close = prices.pivot(index="date", columns="sec", values="close")
-    expected = -close.pct_change(periods=60, fill_method=None)
+    ret = close.pct_change(fill_method=None)
+    expected = (ret > 0.0).where(ret.notna()).rolling(20).mean()
     expected.index.name = "date"
     pd.testing.assert_frame_equal(result, expected)
 
 
-def test_low_vol_60_meta():
-    cls = get_factor_class("low_vol_60")
+def test_drawdown_120_formula():
+    """120-day max drawdown equals rolling min of close/cummax - 1."""
+    cls = get_factor_class("drawdown_120")
     assert cls is not None
-    assert cls.display_name == "60日低波动"
-    assert cls.category == "波动"
-    assert cls.direction == "positive"  # 因子层已取反，低波动得高分
+    factor = cls()
+    prices = _long_price_data(n=80)
+    result = factor.build(prices, pd.DataFrame(), ["A", "B"])
+    close = prices.pivot(index="date", columns="sec", values="close")
+    dd = close / close.cummax() - 1.0
+    expected = dd.rolling(120, min_periods=1).min()
+    expected.index.name = "date"
+    pd.testing.assert_frame_equal(result, expected)
 
 
-def test_money_flow_20_meta():
-    cls = get_factor_class("money_flow_20")
+def test_skewness_60_reversal_meta():
+    cls = get_factor_class("skewness_60_reversal")
     assert cls is not None
-    assert cls.display_name == "20日资金流方向"
+    assert cls.display_name == "60日偏度反转"
+    assert cls.category == "反转"
+    assert cls.direction == "positive"  # 因子层已取反，右偏(过去大涨脉冲)得低分
+
+
+def test_mfi_meta():
+    cls = get_factor_class("mfi")
+    assert cls is not None
+    assert cls.display_name == "14日资金流量指标"
     assert cls.category == "量能"
     assert cls.direction == "positive"
 
@@ -80,8 +97,8 @@ def test_factor_formula_present():
 
 def test_new_factors_build_on_generated_data():
     """Every new built-in factor builds a date x sec matrix."""
-    prices = _long_price_data(n=80)
-    for name in ["aroon_diff", "momentum_60_reversal", "ma60_slope_reversal", "low_vol_60", "money_flow_20"]:
+    prices = _long_price_data(n=140)
+    for name in ["macd_hist", "skewness_60_reversal", "mfi", "psy20", "drawdown_120"]:
         cls = get_factor_class(name)
         factor = cls().build(prices, pd.DataFrame(), ["A", "B"])
         assert factor.shape[1] == 2

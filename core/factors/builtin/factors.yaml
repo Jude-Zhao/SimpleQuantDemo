@@ -10,27 +10,30 @@
 # 空类别（factors: []）正常展示，但不参与得分合成。
 # 新增因子只需在此登记，无需修改策略代码。
 #
-# 当前因子为 2026-08-15 从上游 ETF BL-lite 15 因子验证后移植的生产因子
-# （表现达标的 5 个，h=5 口径）。旧本地因子 momentum/volatility/reversal 已移除。
+# 当前因子为 2026-08-19 按全期 RankIC/ICIR 评审后从 ETF BL-lite 15 因子迁移的
+# 5 个生产因子（h=5 口径）：macd_hist(动量) / skewness_60_reversal(反转) /
+# drawdown_120(波动) / mfi+psy20(量能)。此前旧 5 因子
+# aroon_diff / momentum_60_reversal / ma60_slope_reversal / low_vol_60 /
+# money_flow_20 已移除。
 
 categories:
   momentum:
     display_name: "动量"
     factors:
-      - name: aroon_diff
+      - name: macd_hist
   reversal:
     display_name: "反转"
     factors:
-      - name: momentum_60_reversal
-      - name: ma60_slope_reversal
+      - name: skewness_60_reversal
   volatility:
     display_name: "波动"
     factors:
-      - name: low_vol_60
+      - name: drawdown_120
   volume:
     display_name: "量能"
     factors:
-      - name: money_flow_20
+      - name: mfi
+      - name: psy20
   other:
     display_name: "其他"
     factors: []

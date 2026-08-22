@@ -1,1 +1,0 @@
-"""Aroon diff factor (分类: 动量)."""

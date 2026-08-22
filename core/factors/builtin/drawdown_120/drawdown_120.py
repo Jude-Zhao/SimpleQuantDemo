@@ -1,4 +1,4 @@
-"""60-day low volatility factor (分类: 波动)."""
+"""120-day max drawdown factor (分类: 波动)."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ from core.factors.registry import register_factor
 from core.factors.utils import pivot_price_field, validate_factor_matrix
 
 
-@register_factor("low_vol_60")
-class LowVol60Factor(FactorBuilder):
-    """60-day low volatility (negated)."""
+@register_factor("drawdown_120")
+class Drawdown120Factor(FactorBuilder):
+    """120-day max drawdown; shallower drawdown scores higher (path risk)."""
 
-    registry_name = "low_vol_60"
-    display_name = "60日低波动"
+    registry_name = "drawdown_120"
+    display_name = "120日最大回撤"
     category = "波动"
-    description = "60日收益标准差的相反数，低波动得高分"
-    formula = "-std(ret,60)"
+    description = "过去120日最深回撤，回撤越浅分越高"
+    formula = "min(close/cummax - 1, 120)"
     direction = "positive"
     params_schema: dict = {}
 
     @property
     def name(self) -> str:
-        return "low_vol_60"
+        return "drawdown_120"
 
     def build(
         self,
@@ -32,9 +32,9 @@ class LowVol60Factor(FactorBuilder):
         universe: list[str],
     ) -> pd.DataFrame:
         close = pivot_price_field(price_data, field="close", universe=universe)
-        ret = close.pct_change(fill_method=None)
-        vol60 = ret.rolling(60).std().clip(lower=1e-8)
-        factor = -vol60
+        running_max = close.cummax()
+        dd = close / running_max - 1.0
+        factor = dd.rolling(120, min_periods=1).min()
         factor.index.name = "date"
         validate_factor_matrix(factor, universe, name=self.name)
         return factor

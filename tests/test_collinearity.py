@@ -9,7 +9,7 @@ from core.analysis import (
     find_correlated_pairs,
 )
 from core.analysis.exceptions import AnalysisError
-from core.factors import AroonDiffFactor, LowVol60Factor
+from core.factors import MACDHistFactor, Drawdown120Factor
 
 
 def _factor_panel() -> dict[str, pd.DataFrame]:
@@ -120,8 +120,8 @@ def test_collinearity_pipeline_with_example_factors(sqlite_source) -> None:
         start_date="2024-06-03",
         end_date="2025-12-31",
     )
-    momentum = AroonDiffFactor().build(price_data, macro_data, universe)
-    volatility = LowVol60Factor().build(price_data, macro_data, universe)
+    momentum = MACDHistFactor().build(price_data, macro_data, universe)
+    volatility = Drawdown120Factor().build(price_data, macro_data, universe)
 
     result = analyze_collinearity(
         {"momentum_5": momentum, "volatility_20": volatility},

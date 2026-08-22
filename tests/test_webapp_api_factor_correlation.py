@@ -12,7 +12,7 @@ client = TestClient(app)
 def test_factor_correlation_instance():
     response = client.post("/api/factors/correlation", json={
         "granularity": "instance",
-        "factor_ids": ["aroon_diff", "low_vol_60", "ma60_slope_reversal"],
+        "factor_ids": ["macd_hist", "skewness_60_reversal", "mfi"],
     })
     assert response.status_code == 200
     data = response.json()
@@ -20,7 +20,7 @@ def test_factor_correlation_instance():
     assert data["granularity"] == "instance"
     assert "labels" in data
     assert "correlation_matrix" in data
-    assert data["labels"] == ["aroon_diff", "low_vol_60", "ma60_slope_reversal"]
+    assert data["labels"] == ["macd_hist", "skewness_60_reversal", "mfi"]
     assert len(data["correlation_matrix"]) == 3
     # Diagonal should be 1.0
     for i in range(3):
