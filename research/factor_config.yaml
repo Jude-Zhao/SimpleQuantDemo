@@ -3,31 +3,32 @@
 # 格式与 core/factors/builtin/factors.yaml 对齐。
 # name 解析顺序：research 因子池 -> core 内置 registry。
 #
-# 2026-08-15 移植后：表现达标的 5 个文档因子（aroon_diff / momentum_60_reversal /
-# ma60_slope_reversal / low_vol_60 / money_flow_20）已迁入 core 生产；旧本地因子
-# momentum/volatility/reversal 已删除。本配置仅保留 **未移植** 的文档因子供后续研究
-# （研究区保留，不随 git 提交）。
+# 2026-08-23 维护：此前配置的 etf15_* 文档因子（plrc24 / risk_adj_momentum_120 /
+# momentum_10 / reversal_bias5 / low_downside_vol_60）在本仓库无实现文件
+#（.gitignore 忽略 research/factors/etf15_*.py 且磁盘未提供），会导致 research.main
+# 加载时 fail-fast。已从配置移除，仅保留 core 内置因子的可解析实例。
+# research_demo 分类演示如何在研究池注册自定义因子（price_position）。
 
 categories:
   momentum:
     display_name: "动量"
     factors:
       - name: macd_hist
-      - name: plrc24
-      - name: risk_adj_momentum_120
-      - name: momentum_10
   reversal:
     display_name: "反转"
     factors:
-      - name: reversal_bias5
       - name: skewness_60_reversal
   volatility:
     display_name: "波动"
     factors:
-      - name: low_downside_vol_60
       - name: drawdown_120
   volume:
     display_name: "量能"
     factors:
       - name: mfi
       - name: psy20
+  research_demo:
+    display_name: "研究示例"
+    factors:
+      - name: price_position
+        params: { window: 20 }
