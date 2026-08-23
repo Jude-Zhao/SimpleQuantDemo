@@ -44,8 +44,11 @@ def test_load_research_categories_keeps_all_declared() -> None:
     # 已迁移到 core 的因子仍可从 research 分类配置解析（core fallback）
     assert "macd_hist" in names
     assert "mfi" in names
-    # 仍留在 research 池的因子
-    assert "reversal_bias5" in names
+    # 仍留在 research 池的因子（research_demo 分类）
+    assert "price_position" in names
+    # 已从配置移除的无实现 etf15_* 文档因子不应再被引用
+    assert "plrc24" not in names
+    assert "reversal_bias5" not in names
 
 
 def test_protocol_migration_consistency(sqlite_source) -> None:

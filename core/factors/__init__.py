@@ -13,9 +13,13 @@ from core.factors.builtin.drawdown_120.drawdown_120 import Drawdown120Factor
 from core.factors.builtin.macd_hist.macd_hist import MACDHistFactor
 from core.factors.builtin.mfi.mfi import MFIFactor
 from core.factors.builtin.psy20.psy20 import PSY20Factor
+from core.factors.builtin.momentum_linreg_slope.momentum_linreg_slope import (
+    MomentumLinRegSlope,
+)
 from core.factors.builtin.skewness_60_reversal.skewness_60_reversal import (
     Skewness60ReversalFactor,
 )
+from core.factors.builtin.volume_obv_slope.volume_obv_slope import VolumeOBVSlope
 
 __all__ = [
     "FactorBuilder",
@@ -24,4 +28,6 @@ __all__ = [
     "MFIFactor",
     "PSY20Factor",
     "Drawdown120Factor",
+    "MomentumLinRegSlope",
+    "VolumeOBVSlope",
 ]

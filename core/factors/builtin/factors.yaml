@@ -21,6 +21,9 @@ categories:
     display_name: "动量"
     factors:
       - name: macd_hist
+      - name: momentum_linreg_slope
+        params:
+          window: 20
   reversal:
     display_name: "反转"
     factors:
@@ -34,6 +37,9 @@ categories:
     factors:
       - name: mfi
       - name: psy20
+      - name: volume_obv_slope
+        params:
+          window: 20
   other:
     display_name: "其他"
     factors: []
