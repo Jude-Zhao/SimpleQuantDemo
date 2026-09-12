@@ -328,3 +328,94 @@ def test_unbounded_request_hits_cache_without_fetch():
 
     assert primary.fetch_count == 0
     assert len(result) == len(cached_data)
+
+
+# ── 审核修复 D2/D3：非法周期入口拒绝、源异常与补齐失败显式报告 ──────────
+
+
+def test_invalid_period_rejected_at_entry(caplog):
+    """非法周期在入口直接 ValueError，不触达源层（BUG-06：报错且不静默降级）。"""
+    import logging
+
+    primary = _FakeDataSource(_make_sample_data())
+    cached = CachedDataSource(primary_source=primary)
+
+    with caplog.at_level(logging.WARNING, logger="core.data.cached_source"):
+        with pytest.raises(ValueError, match="不支持的行情周期"):
+            cached.get_etf_price_by_codes(
+                ["510300.SH"], start_date="2024-01-02", end_date="2024-01-08", period="7m"
+            )
+    assert primary.fetch_count == 0  # 参数错误不产生任何源调用
+
+
+def test_source_exception_logged_not_silent(caplog):
+    """源异常兜底返回空但记录异常堆栈，不再无声吞掉。"""
+    import logging
+
+    primary = _FakeDataSource(should_fail=True)
+    secondary = _FakeDataSource(should_fail=True)
+    cached = CachedDataSource(
+        primary_source=primary,
+        secondary_source=secondary,
+        cache_reader=lambda codes, start, end, period: pd.DataFrame(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="core.data.cached_source"):
+        result = cached.get_etf_price_by_codes(
+            ["510300.SH"], start_date="2024-01-02", end_date="2024-01-08"
+        )
+    assert result.empty
+    assert primary.fetch_count == 1 and secondary.fetch_count == 1
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("数据源获取失败" in r.getMessage() for r in error_records)
+
+
+def test_incomplete_codes_logged_on_fill_failure(caplog):
+    """主备源均缺 → incomplete_codes 正确 + WARNING 显式报告（不静默当作完整命中）。"""
+    import logging
+
+    dates = pd.date_range("2024-01-02", periods=3, freq="B")
+    rows_a = [
+        {"date": d, "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 1.0, "volume": 1, "amount": 1}
+        for d in dates
+    ]
+    primary = _FakeDataSource(pd.DataFrame(rows_a))  # 主源只有 A
+    secondary = _FakeDataSource(None)  # 备用源为空
+
+    def reader(codes, start, end, period):
+        return pd.DataFrame()
+
+    cached = CachedDataSource(
+        primary_source=primary,
+        secondary_source=secondary,
+        cache_reader=reader,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="core.data.cached_source"):
+        result = cached.get_etf_price_by_codes(
+            ["510300.SH", "510500.SH"], start_date="2024-01-02", end_date="2024-01-04"
+        )
+    assert cached.incomplete_codes == ["510500.SH"]
+    assert set(result["sec"].unique()) == {"510300.SH"}  # 缺失证券不在结果里
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("行情补齐失败" in r.getMessage() and "510500.SH" in r.getMessage() for r in warnings)
+
+
+def test_incomplete_codes_empty_on_success():
+    """全部补齐成功 → incomplete_codes 为空（不残留上次请求状态）。"""
+    primary = _FakeDataSource(_make_sample_data())
+    secondary = _FakeDataSource(None)
+
+    def reader(codes, start, end, period):
+        return pd.DataFrame()
+
+    cached = CachedDataSource(
+        primary_source=primary,
+        secondary_source=secondary,
+        cache_reader=reader,
+    )
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH", "510500.SH"], start_date="2024-01-02", end_date="2024-01-08"
+    )
+    assert cached.incomplete_codes == []
+    assert set(result["sec"].unique()) == {"510300.SH", "510500.SH"}

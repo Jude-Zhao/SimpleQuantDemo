@@ -45,11 +45,16 @@ def _collect_exclusions(
     date: pd.Timestamp,
     row: pd.Series,
     decision_issues: pd.DataFrame | None,
+    *,
+    non_positive_excluded: bool = False,
 ) -> list[dict]:
     """汇总该决策日全部不合格标的及原因。
 
     - 优先取 decision_issues 中该日的全部无效实例行（同名不同参数实例逐条保留）；
-    - NaN 得分但无 issue 记录的证券补一条 reason="score_missing"，不静默丢原因。
+    - 得分非有限（NaN/±inf）且无 issue 记录的证券补记原因（NaN 为
+      "score_missing"，±inf 为 "score_non_finite"），不静默丢原因；
+    - ``non_positive_excluded``（score 模式）时，有限但 <=0 的得分同样
+      不合格（无法参与得分占比加权），补记 reason="score_non_positive"。
     """
     exclusions: list[dict] = []
     if decision_issues is not None and len(decision_issues) > 0:
@@ -66,9 +71,18 @@ def _collect_exclusions(
                 }
             )
     covered = {e["sec"] for e in exclusions}
-    nan_secs = row.index[~np.isfinite(row.to_numpy())]
-    for sec in nan_secs:
-        if str(sec) in covered:
+    values = row.to_numpy(dtype=float)
+    for sec, value in zip(row.index, values):
+        if str(sec) in covered or np.isfinite(value) and value > 0:
+            continue
+        if np.isnan(value):
+            reason = "score_missing"
+        elif np.isinf(value):
+            reason = "score_non_finite"
+        elif non_positive_excluded:
+            reason = "score_non_positive"
+        else:
+            # equal 模式下有限值（含 0/负分）是合格候选，不记排除
             continue
         exclusions.append(
             {
@@ -77,7 +91,7 @@ def _collect_exclusions(
                 "factor": None,
                 "instance_index": None,
                 "params": None,
-                "reason": "score_missing",
+                "reason": reason,
             }
         )
     exclusions.sort(key=lambda e: (e["sec"], e["category"] or "", e["factor"] or "", e["instance_index"] or 0))
@@ -124,9 +138,22 @@ def build_target_weights(
 
     for date in rebalance_dates:
         row = _score_row(scores, date)
-        finite_mask = np.isfinite(row.to_numpy())
-        eligible_count = int(finite_mask.sum())
-        exclusions = _collect_exclusions(date, row, decision_issues)
+        # 资格标准的唯一定义处（与优化器口径一致，OPT-03：非有限值不合格）：
+        # - equal 模式：有限值即合格（Top N 语义为"得分最高的 N 个"，0/负分
+        #   仍可入选，保持单因子评估轮动的既有行为）；
+        # - score 模式：有限且 >0（ScoreWeightedOptimizer 按得分占比加权，
+        #   非正得分无法参与），避免 eligible_count 与优化器口径分裂导致
+        #   优化器抛错而非按 OPT-03 记录 skipped_insufficient。
+        values = row.to_numpy(dtype=float)
+        finite_mask = np.isfinite(values)
+        if config.weight_mode == "score":
+            eligible_mask = finite_mask & (values > 0)
+        else:
+            eligible_mask = finite_mask
+        eligible_count = int(eligible_mask.sum())
+        exclusions = _collect_exclusions(
+            date, row, decision_issues, non_positive_excluded=config.weight_mode == "score"
+        )
 
         if eligible_count < config.top_n:
             decision_log.append(
@@ -141,7 +168,7 @@ def build_target_weights(
             continue
 
         try:
-            weights_row = optimizer.optimize(row.dropna()).reindex(
+            weights_row = optimizer.optimize(row[eligible_mask]).reindex(
                 scores.columns, fill_value=0.0
             )
         except OptimizationError as exc:

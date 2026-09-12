@@ -226,12 +226,15 @@ def _run_macro_sync(
     """Background worker for macro sync."""
     from webapp.models.database import SessionLocal
 
-    db = SessionLocal()
-    task = get_macro_task(task_id)
-    if task is None:
-        return
-
+    # 外层 try/finally 保证 SessionLocal()/get_macro_task 本身失败时也释放
+    # 活动登记（A10），否则该频率资源将永久 409 直到进程重启。
+    db = None
     try:
+        db = SessionLocal()
+        task = get_macro_task(task_id)
+        if task is None:
+            return
+
         with _macro_tasks_lock:
             task.status = MacroSyncStatus.RUNNING
             task.message = "开始同步宏观数据..."
@@ -248,17 +251,20 @@ def _run_macro_sync(
             task.end_time = datetime.now()
             task.message = f"宏观数据同步完成（{frequency}）"
     except Exception as e:
-        with _macro_tasks_lock:
-            task.status = MacroSyncStatus.FAILED
-            task.end_time = datetime.now()
-            task.error = str(e)
-            task.message = f"宏观数据同步失败：{e}"
+        task = get_macro_task(task_id)
+        if task is not None:
+            with _macro_tasks_lock:
+                task.status = MacroSyncStatus.FAILED
+                task.end_time = datetime.now()
+                task.error = str(e)
+                task.message = f"宏观数据同步失败：{e}"
     finally:
         # A10: 完成/失败都释放活动登记
         from webapp.services.sync_service import release_sync_activity
 
         release_sync_activity(task_id)
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def _sync_daily(db: Session, task: MacroSyncTask, start_date: str | None, end_date: str | None) -> None:

@@ -102,11 +102,57 @@ def test_eligible_counts_with_negative_scores_equal_mode() -> None:
     assert row["B"] == pytest.approx(0.5)
 
 
-def test_score_mode_nonpositive_finite_scores_fail_fast() -> None:
-    """score 模式：有限但非正分数不足以构成正权重组合 → 显式报错（fail-fast）。"""
+def test_score_mode_nonpositive_scores_skip_not_crash() -> None:
+    """score 模式：有限但非正分数不计入合格数；不足 top_n 时按 OPT-03 跳过
+    （skipped_insufficient + 逐标的 exclusions），不再让优化器抛错崩溃整个回测。"""
     scores = _scores({0: {"A": -1.0, "B": -2.0, "C": 0.5}})
-    with pytest.raises(OptimizationError):
-        build_target_weights(scores, DATES, _cfg(top_n=2, weight_mode="score"))
+    plan = build_target_weights(scores, DATES, _cfg(top_n=2, weight_mode="score"))
+    assert plan.target_weights.empty
+    entry = plan.decision_log[0]
+    assert entry["status"] == "skipped_insufficient"
+    assert entry["eligible_count"] == 1  # 只有 C=0.5 合格
+    by_sec = {e["sec"]: e for e in entry["exclusions"]}
+    assert by_sec["A"]["reason"] == "score_non_positive"
+    assert by_sec["B"]["reason"] == "score_non_positive"
+
+
+def test_inf_score_not_selected_equal_mode() -> None:
+    """equal 模式：inf 得分不合格（OPT-03），不得穿透选股被选入组合；
+    exclusions 补记 reason="score_non_finite"。"""
+    scores = _scores({0: {"A": 1.0, "B": 2.0, "C": float("inf")}})
+    plan = build_target_weights(scores, DATES, _cfg(top_n=2))
+    row = plan.target_weights.loc[DATES[0]]
+    selected = sorted(c for c in row.index if row[c] > 0)
+    assert selected == ["A", "B"]  # inf 的 C 不得入选（修复前选中 B、C）
+    entry = plan.decision_log[0]
+    assert entry["status"] == "target_created"
+    assert entry["eligible_count"] == 2
+    by_sec = {e["sec"]: e for e in entry["exclusions"]}
+    assert by_sec["C"]["reason"] == "score_non_finite"
+
+
+def test_inf_score_counts_insufficient_and_skips() -> None:
+    """equal 模式：inf 不计入合格数 → 不足 top_n 记 skipped_insufficient。"""
+    scores = _scores({0: {"A": 1.0, "C": float("inf")}})
+    plan = build_target_weights(scores, DATES, _cfg(top_n=2))
+    assert plan.target_weights.empty
+    entry = plan.decision_log[0]
+    assert entry["status"] == "skipped_insufficient"
+    assert entry["eligible_count"] == 1
+
+
+def test_score_mode_eligible_count_matches_positive_semantics() -> None:
+    """score 模式：eligible_count 与优化器口径一致（仅 >0 计数），
+    0 分证券不入选且记录 score_non_positive，报告数字不再与实际选股矛盾。"""
+    scores = _scores({0: {"A": 1.0, "B": 2.0, "C": 0.0}})
+    plan = build_target_weights(scores, DATES, _cfg(top_n=2, weight_mode="score"))
+    row = plan.target_weights.loc[DATES[0]]
+    assert row["A"] > 0 and row["B"] > 0 and row["C"] == 0.0
+    entry = plan.decision_log[0]
+    assert entry["status"] == "target_created"
+    assert entry["eligible_count"] == 2  # 0 分的 C 不计入
+    by_sec = {e["sec"]: e for e in entry["exclusions"]}
+    assert by_sec["C"]["reason"] == "score_non_positive"
 
 
 def test_max_weight_feasibility_from_config() -> None:

@@ -225,12 +225,15 @@ def _run_etf_sync(
     """Background worker for ETF sync."""
     from webapp.models.database import SessionLocal
 
-    db = SessionLocal()
-    task = get_task(task_id)
-    if task is None:
-        return
-
+    # 外层 try/finally 保证 SessionLocal()/get_task 本身失败时也释放活动
+    # 登记（A10），否则该 (sec,period) 资源将永久 409 直到进程重启。
+    db = None
     try:
+        db = SessionLocal()
+        task = get_task(task_id)
+        if task is None:
+            return
+
         with _tasks_lock:
             task.status = SyncStatus.RUNNING
             task.message = "开始同步..."
@@ -355,15 +358,18 @@ def _run_etf_sync(
             }
 
     except Exception as e:
-        with _tasks_lock:
-            task.status = SyncStatus.FAILED
-            task.end_time = datetime.now()
-            task.error = str(e)
-            task.message = f"同步失败：{e}"
+        task = get_task(task_id)
+        if task is not None:
+            with _tasks_lock:
+                task.status = SyncStatus.FAILED
+                task.end_time = datetime.now()
+                task.error = str(e)
+                task.message = f"同步失败：{e}"
     finally:
         # A10: 完成/失败都释放活动登记
         release_sync_activity(task_id)
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def _delete_etf_range_rows(

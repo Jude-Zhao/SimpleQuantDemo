@@ -6,6 +6,7 @@ Provides convenience functions used by other webapp services.
 
 from __future__ import annotations
 
+import logging
 import math
 
 import pandas as pd
@@ -16,6 +17,8 @@ from core.data.baostock_source import BaostockDataSource
 from core.data.cached_source import CachedDataSource
 from webapp.config import get_config
 from webapp.models.market_data import EtfDailyBar, EtfMinuteBar
+
+logger = logging.getLogger(__name__)
 
 _config = get_config()
 
@@ -226,12 +229,20 @@ def get_etf_price(
 ) -> pd.DataFrame:
     """Get ETF price data (cached)."""
     source = get_cached_source(db)
-    return source.get_etf_price_by_codes(
+    df = source.get_etf_price_by_codes(
         sec_codes=sec_codes,
         start_date=start_date,
         end_date=end_date,
         period=period,
     )
+    # BUG-04: 补齐失败的证券透出为显式告警，不让调用方误以为数据完整
+    missing = getattr(source, "incomplete_codes", [])
+    if missing:
+        logger.warning(
+            "行情读取不完整：以下证券在请求区间 [%s, %s] period=%s 内无任何数据源返回: %s",
+            start_date, end_date, period, missing,
+        )
+    return df
 
 
 def get_etf_list(db: Session | None = None) -> list[dict]:

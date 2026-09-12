@@ -252,6 +252,31 @@ def test_worker_exception_releases_activity(db, monkeypatch):
     _wait_terminal(t2)
 
 
+def test_sessionlocal_failure_releases_activity(db, monkeypatch):
+    """D1: SessionLocal() 本身失败（如数据库连接异常）→ 任务标记失败且
+    活动登记释放，同资源可再次启动（不再永久 409）。"""
+    calls = {"n": 0}
+
+    def _failing_session_local():
+        calls["n"] += 1
+        raise RuntimeError("db connection failed")
+
+    monkeypatch.setattr(db_mod, "SessionLocal", _failing_session_local)
+    monkeypatch.setattr("webapp.config.get_config", lambda: _fake_config(2))
+    monkeypatch.setattr(ss, "_get_primary_source", lambda: SimpleNamespace())
+    monkeypatch.setattr(ss, "_get_secondary_source", lambda: SimpleNamespace())
+
+    t1 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
+    t1 = _wait_terminal(t1)
+    assert t1.status == ss.SyncStatus.FAILED
+    assert calls["n"] == 1
+
+    # 活动登记已释放：恢复正常的 SessionLocal 后同资源可再次启动
+    _patch_env(db, monkeypatch)
+    t2 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
+    _wait_terminal(t2)
+
+
 def test_written_range_is_actual_not_requested(db, monkeypatch):
     """实际返回范围不复制请求结束日：written_end = 实际 frame 最大日期。"""
     _patch_env(db, monkeypatch)

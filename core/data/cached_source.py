@@ -7,11 +7,21 @@ does not depend on any ORM or webapp code.
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 import pandas as pd
 
 from core.data.base import DataSource
+
+logger = logging.getLogger(__name__)
+
+# 系统支持的行情周期白名单（以 baostock freq_map 键为准；daily/d 等价）。
+# 非法周期在入口直接拒绝（BUG-06 验收：非法周期报错，不静默降级/吞异常）。
+SUPPORTED_PERIODS = frozenset({"daily", "d", "5m", "15m", "30m", "60m"})
+
+# 标准结果列：全部源失败且无缓存时也返回带列的空结果
+_RESULT_COLUMNS = ["date", "sec", "open", "high", "low", "close", "volume", "amount"]
 
 
 class CachedDataSource(DataSource):
@@ -65,6 +75,10 @@ class CachedDataSource(DataSource):
         Tries cache first. On miss (or partial miss), fetches from the
         primary source (falling back to secondary), then writes to cache.
         """
+        if period not in SUPPORTED_PERIODS:
+            raise ValueError(
+                f"不支持的行情周期: {period!r}，支持: {sorted(SUPPORTED_PERIODS)}"
+            )
         if not sec_codes:
             return pd.DataFrame(columns=["date", "sec", "open", "high", "low", "close", "volume", "amount"])
 
@@ -91,7 +105,7 @@ class CachedDataSource(DataSource):
         )
 
         # 2b. 主源仍缺少的证券交备用源补抓（BUG-04）；补齐失败记录为显式
-        # 不完整状态，不静默当作完整命中
+        # 不完整状态（incomplete_codes + 告警日志），不静默当作完整命中
         still_missing = self._codes_missing(fresh_df, fetch_codes)
         if still_missing and self.secondary is not None:
             extra = self._fetch_from_source(
@@ -105,12 +119,21 @@ class CachedDataSource(DataSource):
                 fresh_df = pd.concat([fresh_df, extra], ignore_index=True)
         else:
             self.incomplete_codes = list(still_missing)
+        if self.incomplete_codes:
+            logger.warning(
+                "行情补齐失败：sec=%s range=[%s, %s] period=%s（缓存与主备源均无数据）",
+                self.incomplete_codes, start_date, end_date, period,
+            )
 
         # 4. Write to cache
         if self.cache_writer is not None and not fresh_df.empty:
             self.cache_writer(fresh_df, period)
 
         # 5. Merge cached + fresh data
+        if cached.empty and fresh_df.empty:
+            # 主备源均失败且无缓存：返回带标准列的空结果，
+            # 不因缺列在排序处抛 KeyError 掩盖真实失败原因
+            return pd.DataFrame(columns=_RESULT_COLUMNS)
         if cached.empty:
             result = fresh_df
         elif fresh_df.empty:
@@ -184,7 +207,11 @@ class CachedDataSource(DataSource):
         period: str,
         source_name: str,
     ) -> pd.DataFrame:
-        """Try to fetch data from a source. Returns empty DataFrame on failure."""
+        """Try to fetch data from a source. Returns empty DataFrame on failure.
+
+        源异常（网络/接口失败等）兜底返回空并记录异常堆栈，供上层回退备用源
+        与缓存；非法参数类异常（如周期校验）在入口已拦截，不会进入本方法。
+        """
         try:
             if hasattr(source, "get_etf_price_by_codes"):
                 df = source.get_etf_price_by_codes(
@@ -200,6 +227,11 @@ class CachedDataSource(DataSource):
                     df = df[df["sec"].isin(sec_codes)]
             return df
         except Exception:
+            logger.exception(
+                "数据源获取失败（source=%s sec=%s range=[%s, %s] period=%s），"
+                "按空数据处理并回退",
+                source_name, sec_codes, start_date, end_date, period,
+            )
             return pd.DataFrame()
 
     def get_macro_factors(
