@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from webapp.main import app
+
+pytestmark = pytest.mark.usefixtures("webapp_clean_state")
 
 client = TestClient(app)
 
@@ -56,12 +60,11 @@ def test_e2e_compute_factor():
         "params": {},
         "horizon": 5,
     })
-    assert response.status_code in (200, 503)  # 503 if no network data available
-    if response.status_code == 200:
-        data = response.json()
-        assert data["factor_name"] == "macd_hist"
-        assert "ic_result" in data
-        assert "group_returns" in data
+    assert response.status_code == 200
+    data = response.json()
+    assert data["factor_name"] == "macd_hist"
+    assert "ic_result" in data
+    assert "group_returns" in data
 
 
 def test_e2e_run_strategy_and_view_records():
@@ -77,10 +80,7 @@ def test_e2e_run_strategy_and_view_records():
     })
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] in ("pending", "failed")
-
-    if data["status"] == "failed":
-        return  # validation/concurrency failure; not the success path
+    assert data["status"] == "pending", data.get("error_msg")
 
     run_id = data["run_id"]
     assert run_id > 0

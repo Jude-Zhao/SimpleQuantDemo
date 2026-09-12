@@ -37,6 +37,8 @@ class CachedDataSource(DataSource):
         self.secondary = secondary_source
         self.cache_reader = cache_reader
         self.cache_writer = cache_writer
+        # 上一次请求中源侧仍无法补齐的证券（显式不完整状态；完整时为空）
+        self.incomplete_codes: list[str] = []
 
     def get_etf_price(
         self,
@@ -73,26 +75,36 @@ class CachedDataSource(DataSource):
             if cached is None:
                 cached = pd.DataFrame()
 
-        # Check which codes are fully covered by cache
-        if not cached.empty:
-            cached_codes = set(cached["sec"].unique())
-            missing_codes = [c for c in sec_codes if c not in cached_codes]
-            if not missing_codes:
-                return cached.sort_values(["date", "sec"]).reset_index(drop=True)
-            fetch_codes = missing_codes
-        else:
-            fetch_codes = list(sec_codes)
+        # Check which codes are provably covered by the cache (BUG-04):
+        # per-security date-range judgment — A being covered never masks B
+        # being incomplete.
+        covered, uncovered = self._split_by_coverage(
+            cached, sec_codes, start_date, end_date
+        )
+        if not uncovered:
+            return cached.sort_values(["date", "sec"]).reset_index(drop=True)
+        fetch_codes = uncovered
 
-        # 2. Fetch from primary source
+        # 2. Fetch uncovered codes from primary
         fresh_df = self._fetch_from_source(
             self.primary, fetch_codes, start_date, end_date, period, "primary"
         )
 
-        # 3. Fallback to secondary if primary failed
-        if fresh_df.empty and self.secondary is not None:
-            fresh_df = self._fetch_from_source(
-                self.secondary, fetch_codes, start_date, end_date, period, "secondary"
+        # 2b. 主源仍缺少的证券交备用源补抓（BUG-04）；补齐失败记录为显式
+        # 不完整状态，不静默当作完整命中
+        still_missing = self._codes_missing(fresh_df, fetch_codes)
+        if still_missing and self.secondary is not None:
+            extra = self._fetch_from_source(
+                self.secondary, still_missing, start_date, end_date, period, "secondary"
             )
+            if extra.empty:
+                self.incomplete_codes = list(still_missing)
+            else:
+                still_missing = self._codes_missing(extra, still_missing)
+                self.incomplete_codes = list(still_missing)
+                fresh_df = pd.concat([fresh_df, extra], ignore_index=True)
+        else:
+            self.incomplete_codes = list(still_missing)
 
         # 4. Write to cache
         if self.cache_writer is not None and not fresh_df.empty:
@@ -108,6 +120,60 @@ class CachedDataSource(DataSource):
             result = result.drop_duplicates(subset=["date", "sec"], keep="last")
 
         return result.sort_values(["date", "sec"]).reset_index(drop=True)
+
+    @staticmethod
+    def _codes_missing(df: pd.DataFrame, sec_codes: list[str]) -> list[str]:
+        """Return codes absent from ``df``."""
+        if df is None or df.empty:
+            return list(sec_codes)
+        present = set(df["sec"].unique())
+        return [c for c in sec_codes if c not in present]
+
+    @staticmethod
+    def _split_by_coverage(
+        cached: pd.DataFrame,
+        sec_codes: list[str],
+        start_date: str | pd.Timestamp | None,
+        end_date: str | pd.Timestamp | None,
+    ) -> tuple[list[str], list[str]]:
+        """Split requested codes into cache-covered and uncovered (BUG-04).
+
+        覆盖证明依据与局限：
+        - 无边界请求（start/end 均为 None）语义是“读取缓存内全部历史”，
+          证券出现在缓存中即视为命中，不存在部分日期误判为完整命中的问题。
+        - 有边界请求采用首尾快路径：仅当请求区间 ⊆ 该证券缓存数据的
+          [min_date, max_date] 时才视为覆盖。局限：缓存区间内部缺失的
+          交易日（洞）无法由首尾判断发现——该完整性由写入侧“单事务
+          完整区间替换”（BUG-02）保证；判断不按自然日数量推断交易日，
+          正常周末/节假日不会误报为缺口。
+        - 周期维度由 cache_reader 按 period 过滤（daily/minute 分表），
+          日频与分钟缓存不会互混。
+        """
+        if cached.empty:
+            return [], list(sec_codes)
+
+        if start_date is None and end_date is None:
+            cached_codes = set(cached["sec"].unique())
+            covered = [c for c in sec_codes if c in cached_codes]
+            uncovered = [c for c in sec_codes if c not in cached_codes]
+            return covered, uncovered
+
+        start = pd.Timestamp(start_date) if start_date is not None else None
+        end = pd.Timestamp(end_date) if end_date is not None else None
+        covered: list[str] = []
+        uncovered: list[str] = []
+        for c in sec_codes:
+            sub = cached[cached["sec"] == c]
+            if sub.empty:
+                uncovered.append(c)
+                continue
+            sec_min = pd.Timestamp(sub["date"].min())
+            sec_max = pd.Timestamp(sub["date"].max())
+            if (start is None or sec_min <= start) and (end is None or sec_max >= end):
+                covered.append(c)
+            else:
+                uncovered.append(c)
+        return covered, uncovered
 
     def _fetch_from_source(
         self,

@@ -9,7 +9,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from webapp.models.database import get_db
-from webapp.services.sync_service import SyncStatus, SyncType, get_task, start_etf_sync
+from webapp.services.sync_service import (
+    SyncCapacityError,
+    SyncConflictError,
+    SyncStatus,
+    SyncType,
+    get_task,
+    start_etf_sync,
+)
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -39,17 +46,24 @@ class SyncTaskResponse(BaseModel):
 
 @router.post("/sync/etf", response_model=SyncTaskResponse)
 def sync_etf(req: EtfSyncRequest, db: Session = Depends(get_db)):
-    """Trigger a full ETF data sync (deletes old data and re-fetches).
+    """Trigger a full ETF data sync (single-transaction range replace).
 
     Sync runs in the background. Poll /api/market/sync/{task_id} for progress.
     """
-    task = start_etf_sync(
-        db=db,
-        sec_codes=req.sec_codes,
-        start_date=req.start_date,
-        end_date=req.end_date,
-        period=req.period,
-    )
+    try:
+        task = start_etf_sync(
+            db=db,
+            sec_codes=req.sec_codes,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            period=req.period,
+        )
+    except SyncConflictError as e:
+        # A10: 与进行中的同步资源重叠 → 409
+        raise HTTPException(status_code=409, detail=str(e))
+    except SyncCapacityError as e:
+        # A10: 并发任务满容量 → 429
+        raise HTTPException(status_code=429, detail=str(e))
     return _task_to_response(task)
 
 

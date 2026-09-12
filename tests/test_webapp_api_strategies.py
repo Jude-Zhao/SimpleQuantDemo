@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from webapp.main import app
 from webapp.models.database import SessionLocal
 from webapp.models.strategy_run import StrategyRun
+
+pytestmark = pytest.mark.usefixtures("webapp_clean_state")
 
 client = TestClient(app)
 

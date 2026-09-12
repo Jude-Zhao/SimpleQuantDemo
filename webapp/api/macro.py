@@ -73,13 +73,22 @@ def monthly_macro(
 
 @router.post("/sync", response_model=MacroSyncResponse)
 def sync_macro(req: MacroSyncRequest, db: Session = Depends(get_db)):
-    """Trigger a macro data sync (full overwrite)."""
-    task = start_macro_sync(
-        db=db,
-        frequency=req.frequency,
-        start_date=req.start_date,
-        end_date=req.end_date,
-    )
+    """Trigger a macro data sync (range-scoped merge)."""
+    from webapp.services.sync_service import SyncCapacityError, SyncConflictError
+
+    try:
+        task = start_macro_sync(
+            db=db,
+            frequency=req.frequency,
+            start_date=req.start_date,
+            end_date=req.end_date,
+        )
+    except SyncConflictError as e:
+        # A10: 与进行中的宏观同步重叠 → 409
+        raise HTTPException(status_code=409, detail=str(e))
+    except SyncCapacityError as e:
+        # A10: 并发任务满容量 → 429
+        raise HTTPException(status_code=429, detail=str(e))
     return _task_to_response(task)
 
 

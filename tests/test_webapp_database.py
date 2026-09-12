@@ -1,6 +1,10 @@
+import pytest
+
 from sqlalchemy import text
 
 from webapp.models.database import Base, SessionLocal, engine, init_db
+
+pytestmark = pytest.mark.usefixtures("webapp_clean_state")
 
 
 def test_database_engine():

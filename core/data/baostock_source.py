@@ -37,6 +37,39 @@ class BaostockDataSource(DataSource):
         code, market = sec_code.split(".")
         return f"{market.lower()}.{code}"
 
+    @staticmethod
+    def _parse_minute_datetime(df: pd.DataFrame, sec_code: str) -> pd.DataFrame:
+        """解析分钟线的真实日内时间（BUG-06）。
+
+        baostock ``time`` 字段为 YYYYMMDDHHMMSSsss（前 14 位即秒级时间）；
+        兼容“date 列本身携带 HH:MM:SS”的返回形态。解析不出真实日内时间
+        的数据直接报错，绝不静默写当日零点（分钟线不存在 00:00:00 的
+        有效 bar）。
+        """
+        parsed = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+        if "time" in df.columns:
+            digits = df["time"].astype(str).str.strip()
+            from_time = pd.to_datetime(
+                digits.str[:14], format="%Y%m%d%H%M%S", errors="coerce"
+            )
+            parsed = parsed.fillna(from_time)
+
+        from_date = pd.to_datetime(df["date"], errors="coerce")
+        # date 形态兜底：仅当其携带非零日内时间时可用（防静默零点）
+        usable_date = from_date.notna() & (
+            (from_date.dt.hour.fillna(-1) > 0) | (from_date.dt.minute.fillna(-1) > 0)
+        )
+        parsed = parsed.where(parsed.notna(), from_date.where(usable_date))
+
+        invalid = parsed.isna()
+        if invalid.any():
+            raise ValueError(
+                f"{sec_code}: 分钟数据有 {int(invalid.sum())} 行无法解析出真实日内时间，拒绝入库"
+            )
+        df = df.copy()
+        df["date"] = parsed
+        return df
+
     def get_etf_price(
         self,
         start_date: str | pd.Timestamp | None = None,
@@ -73,10 +106,7 @@ class BaostockDataSource(DataSource):
         if not sec_codes:
             return pd.DataFrame(columns=["date", "sec", "open", "high", "low", "close", "volume", "amount"])
 
-        self._ensure_login()
-        import baostock as bs  # type: ignore
-
-        # Map period to baostock frequency parameter
+        # Map period to baostock frequency parameter（BUG-06：白名单，明确拒绝）
         freq_map = {
             "daily": "d",
             "d": "d",
@@ -86,12 +116,23 @@ class BaostockDataSource(DataSource):
             "30m": "30",
             "60m": "60",
         }
-        frequency = freq_map.get(period, "d")
+        if period not in freq_map:
+            raise ValueError(
+                f"Unsupported period: {period!r}; supported: {sorted(freq_map)}"
+            )
+        frequency = freq_map[period]
+
+        self._ensure_login()
+        import baostock as bs  # type: ignore
 
         start_str = pd.Timestamp(start_date).strftime("%Y-%m-%d") if start_date else "2010-01-01"
         end_str = pd.Timestamp(end_date).strftime("%Y-%m-%d") if end_date else pd.Timestamp.now().strftime("%Y-%m-%d")
 
-        fields = "date,code,open,high,low,close,volume,amount"
+        if frequency == "d":
+            fields = "date,code,open,high,low,close,volume,amount"
+        else:
+            # BUG-06: 分钟请求必须携带 time 字段以获得真实日内时间
+            fields = "date,time,code,open,high,low,close,volume,amount"
 
         all_frames: list[pd.DataFrame] = []
         for sec_code in sec_codes:
@@ -115,6 +156,8 @@ class BaostockDataSource(DataSource):
 
             df = pd.DataFrame(rows, columns=fields.split(","))
             df["sec"] = sec_code
+            if frequency != "d":
+                df = self._parse_minute_datetime(df, sec_code)
             all_frames.append(df)
 
         if not all_frames:

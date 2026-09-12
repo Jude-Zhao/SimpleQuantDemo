@@ -175,23 +175,45 @@ def start_macro_sync(
     end_date: str | None = None,
 ) -> MacroSyncTask:
     """Start a macro data sync in a background thread."""
-    from webapp.models.database import SessionLocal
+    import uuid
 
-    task = MacroSyncTask(
-        task_id=str(uuid.uuid4()),
-        frequency=frequency,
-        status=MacroSyncStatus.PENDING,
-        start_time=datetime.now(),
+    from webapp.config import get_config
+    from webapp.services.sync_service import (
+        register_sync_activity,
+        release_sync_activity,
     )
-    with _macro_tasks_lock:
-        _macro_tasks[task.task_id] = task
 
-    thread = threading.Thread(
-        target=_run_macro_sync,
-        args=(task.task_id, frequency, start_date, end_date),
-        daemon=True,
-    )
-    thread.start()
+    task_id = str(uuid.uuid4())
+    resources = [
+        {
+            "key": frequency,
+            "period": "",
+            "start": pd.Timestamp(start_date) if start_date else None,
+            "end": pd.Timestamp(end_date) if end_date else None,
+        }
+    ]
+    max_tasks = get_config().sync.max_concurrent_tasks
+    # A10: 宏观资源为 frequency；锁内原子检查容量/冲突并登记
+    register_sync_activity(task_id, "macro", resources, max_tasks)
+    try:
+        task = MacroSyncTask(
+            task_id=task_id,
+            frequency=frequency,
+            status=MacroSyncStatus.PENDING,
+            start_time=datetime.now(),
+        )
+        with _macro_tasks_lock:
+            _macro_tasks[task.task_id] = task
+
+        thread = threading.Thread(
+            target=_run_macro_sync,
+            args=(task.task_id, frequency, start_date, end_date),
+            daemon=True,
+        )
+        thread.start()
+    except Exception:
+        release_sync_activity(task_id)
+        raise
     return task
 
 
@@ -232,11 +254,21 @@ def _run_macro_sync(
             task.error = str(e)
             task.message = f"宏观数据同步失败：{e}"
     finally:
+        # A10: 完成/失败都释放活动登记
+        from webapp.services.sync_service import release_sync_activity
+
+        release_sync_activity(task_id)
         db.close()
 
 
 def _sync_daily(db: Session, task: MacroSyncTask, start_date: str | None, end_date: str | None) -> None:
-    """Fetch daily macro data from AkShare and overwrite SQLite."""
+    """Fetch daily macro data from AkShare and merge it into SQLite.
+
+    BUG-03: all sources are clipped to the requested range, so out-of-range
+    returns are never written; rows outside the range are kept; missing new
+    fields never clear old valid values (non-null merge). The merge and its
+    commit form a single transaction — any failure rolls the whole range back.
+    """
     from core.data.akshare_source import AkShareDataSource
 
     source = AkShareDataSource()
@@ -245,30 +277,67 @@ def _sync_daily(db: Session, task: MacroSyncTask, start_date: str | None, end_da
     if df.empty:
         raise RuntimeError("AkShare 未返回日频宏观数据")
 
-    # Delete old rows in range
-    deleted = db.query(MacroDaily).delete()
-    db.commit()
+    # 统一裁剪到请求区间（超范围返回不写入）
+    if start_date or end_date:
+        idx = pd.to_datetime(df.index)
+        keep = pd.Series(True, index=df.index)
+        if start_date:
+            keep = keep & pd.Series(idx >= pd.Timestamp(start_date), index=df.index)
+        if end_date:
+            keep = keep & pd.Series(idx <= pd.Timestamp(end_date), index=df.index)
+        df = df[keep]
 
-    # Write new rows (table was just emptied, no per-row dedup needed).
+    if df.empty:
+        task.result = {"rows": 0, "columns": []}
+        return
+
+    try:
+        count = _merge_daily_rows(db, df, start_date, end_date)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    task.result = {"rows": count, "columns": list(df.columns)}
+
+
+def _merge_daily_rows(
+    db: Session,
+    df: pd.DataFrame,
+    start_date: str | None,
+    end_date: str | None,
+) -> int:
+    """Upsert daily rows: non-null new values win; missing fields keep old
+    values (never treat None as a clear instruction). Returns row count."""
+    q = db.query(MacroDaily)
+    if start_date:
+        q = q.filter(MacroDaily.trade_date >= start_date)
+    if end_date:
+        q = q.filter(MacroDaily.trade_date <= end_date)
+    existing = {r.trade_date: r for r in q.all()}
+
     count = 0
     for idx, row in df.iterrows():
         trade_date = pd.Timestamp(idx).strftime("%Y-%m-%d")
-
-        record = MacroDaily(trade_date=trade_date)
+        record = existing.get(trade_date)
+        if record is None:
+            record = MacroDaily(trade_date=trade_date)
+            db.add(record)
         for f in DAILY_FIELDS:
             if f.name in df.columns:
                 val = row.get(f.name)
                 if pd.notna(val):
                     setattr(record, f.name, float(val))
-        db.add(record)
         count += 1
-
-    db.commit()
-    task.result = {"rows": count, "columns": list(df.columns)}
+    return count
 
 
 def _sync_monthly(db: Session, task: MacroSyncTask, start_date: str | None, end_date: str | None) -> None:
-    """Fetch monthly macro data from Baostock + AkShare and overwrite SQLite."""
+    """Fetch monthly macro data from Baostock + AkShare and merge into SQLite.
+
+    BUG-03: months outside the requested range (inclusive of the end month,
+    cross-year boundaries included) are never written; missing fields keep
+    old valid values; the merge commits as a single transaction.
+    """
     from core.data.baostock_source import BaostockDataSource
     from core.data.akshare_source import ensure_akshare_available
 
@@ -299,14 +368,64 @@ def _sync_monthly(db: Session, task: MacroSyncTask, start_date: str | None, end_
     if not data:
         raise RuntimeError("未能获取任何月频宏观数据")
 
-    # Delete old rows
-    db.query(MacroMonthly).delete()
-    db.commit()
+    # 统一裁剪：只保留请求区间内的月份（含结束月），跨年边界按 Period 比较
+    data = {
+        m: v
+        for m, v in data.items()
+        if _in_requested_months(m, start_date, end_date)
+    }
+    if not data:
+        task.result = {"rows": 0, "months": [], "total_months": 0}
+        return
+
+    try:
+        count = _merge_monthly_rows(db, data, start_date, end_date)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    task.result = {"rows": count, "months": sorted(data.keys())[:5], "total_months": len(data)}
+
+
+def _in_requested_months(month: str, start_date: str | None, end_date: str | None) -> bool:
+    """Check whether ``month`` (YYYY-MM) falls inside the requested range.
+
+    The end boundary is inclusive; cross-year ranges (e.g. 2025-12 ~
+    2026-02 → three months) are handled by Period comparison.
+    """
+    p = pd.Period(month, freq="M")
+    if start_date and p < pd.Timestamp(start_date).to_period("M"):
+        return False
+    if end_date and p > pd.Timestamp(end_date).to_period("M"):
+        return False
+    return True
+
+
+def _merge_monthly_rows(
+    db: Session,
+    data: dict[str, dict[str, float]],
+    start_date: str | None,
+    end_date: str | None,
+) -> int:
+    """Upsert monthly rows: non-null new values win; missing fields keep old
+    values. Returns the number of months written/updated."""
+    start_month = str(pd.Timestamp(start_date).to_period("M")) if start_date else None
+    end_month = str(pd.Timestamp(end_date).to_period("M")) if end_date else None
+
+    q = db.query(MacroMonthly)
+    if start_month:
+        q = q.filter(MacroMonthly.trade_month >= start_month)
+    if end_month:
+        q = q.filter(MacroMonthly.trade_month <= end_month)
+    existing = {r.trade_month: r for r in q.all()}
 
     count = 0
     for month in sorted(data.keys()):
         row = data[month]
-        record = MacroMonthly(trade_month=month)
+        record = existing.get(month)
+        if record is None:
+            record = MacroMonthly(trade_month=month)
+            db.add(record)
         if "m1_yoy" in row and "m2_yoy" in row:
             record.m1_yoy = row["m1_yoy"]
             record.m2_yoy = row["m2_yoy"]
@@ -321,11 +440,8 @@ def _sync_monthly(db: Session, task: MacroSyncTask, start_date: str | None, end_
             record.ppi_yoy = row["ppi_yoy"]
         if "aggregate_financing" in row:
             record.aggregate_financing = row["aggregate_financing"]
-        db.add(record)
         count += 1
-
-    db.commit()
-    task.result = {"rows": count, "months": sorted(data.keys())[:5], "total_months": len(data)}
+    return count
 
 
 def _fetch_ak_monthly_series(ak, df: pd.DataFrame, indicator_name: str) -> pd.Series:

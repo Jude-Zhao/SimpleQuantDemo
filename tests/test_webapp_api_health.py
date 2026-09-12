@@ -1,6 +1,10 @@
+import pytest
+
 from fastapi.testclient import TestClient
 
 from webapp.main import app
+
+pytestmark = pytest.mark.usefixtures("webapp_clean_state")
 
 client = TestClient(app)
 

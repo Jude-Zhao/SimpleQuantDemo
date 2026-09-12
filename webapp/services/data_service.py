@@ -6,6 +6,8 @@ Provides convenience functions used by other webapp services.
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -16,6 +18,22 @@ from webapp.config import get_config
 from webapp.models.market_data import EtfDailyBar, EtfMinuteBar
 
 _config = get_config()
+
+
+def _validated_adj_factor(value) -> float | None:
+    """BUG-05: adj_factor 必须有限且 > 0，否则按显式缺失（NULL）处理。
+
+    不默认造 1，不用于宣称真实现价。
+    """
+    if value is None or pd.isna(value):
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val) or val <= 0:
+        return None
+    return val
 
 
 def _get_primary_source():
@@ -74,6 +92,7 @@ def _read_daily_cache(db: Session, sec_codes, start_date, end_date) -> pd.DataFr
             "close": r.close,
             "volume": r.volume,
             "amount": r.amount,
+            "adj_factor": r.adj_factor,
         }
         for r in rows
     ]
@@ -89,9 +108,10 @@ def _read_minute_cache(db: Session, sec_codes, start_date, end_date, period: str
         EtfMinuteBar.period == period,
     )
     if start:
-        query = query.filter(EtfMinuteBar.trade_datetime >= start)
+        query = query.filter(EtfMinuteBar.trade_datetime >= start.normalize())
     if end:
-        query = query.filter(EtfMinuteBar.trade_datetime <= end)
+        # BUG-06: 半开区间【开始日零点, 结束日下一日零点)，结束日盘中数据可查
+        query = query.filter(EtfMinuteBar.trade_datetime < end.normalize() + pd.Timedelta(days=1))
 
     rows = query.all()
     if not rows:
@@ -147,6 +167,7 @@ def _write_daily_cache(db: Session, df: pd.DataFrame) -> None:
             close=float(row.get("close", 0)),
             volume=float(row.get("volume", 0)),
             amount=float(row.get("amount", 0)),
+            adj_factor=_validated_adj_factor(row.get("adj_factor")),
             source=row.get("source", ""),
         )
         db.add(bar)

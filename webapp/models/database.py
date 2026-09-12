@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -14,7 +14,7 @@ def utc_now() -> datetime:
     timezone-aware clock to avoid the Python 3.12+ removal warning while
     keeping the naive-``DateTime`` column semantics unchanged.
     """
-    return datetime.now(UTC).replace(tzinfo=None)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 _config = get_config()

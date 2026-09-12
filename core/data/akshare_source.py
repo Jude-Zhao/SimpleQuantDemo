@@ -89,10 +89,10 @@ class AkShareDataSource(DataSource):
 
         all_frames: list[pd.DataFrame] = []
         for sec_code in sec_codes:
-            # Prefer Tencent 后复权(hfq) + adj_factor; fall back to Sina.
+            # BUG-05: 后复权(hfq)是唯一允许入库的口径。hfq 取不到时不再
+            # 回退未复权数据（未复权不得作为后复权成功入库），由上层
+            # 保留旧数据并报告失败。
             df = self._fetch_hfq_price(ak, sec_code, start_date, end_date)
-            if df.empty:
-                df = self._fetch_sina_price(ak, sec_code, start_date, end_date)
             if not df.empty:
                 all_frames.append(df)
 
@@ -113,36 +113,6 @@ class AkShareDataSource(DataSource):
         """Convert 510300.SH -> sh510300 for Sina/Tencent ETF API."""
         code, market = sec_code.split(".")
         return f"{market.lower()}{code}"
-
-    def _fetch_sina_price(
-        self,
-        ak,
-        sec_code: str,
-        start_date: str | pd.Timestamp | None,
-        end_date: str | pd.Timestamp | None,
-    ) -> pd.DataFrame:
-        """Fetch unadjusted OHLCV from Sina (fallback). Returns standard columns."""
-        try:
-            sina_code = self._to_sina_code(sec_code)
-            df = ak.fund_etf_hist_sina(symbol=sina_code)
-            if df.empty:
-                return pd.DataFrame()
-            df = df.rename(columns={
-                "date": "date",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "volume": "volume",
-                "amount": "amount",
-            })
-            df["sec"] = sec_code
-            df["date"] = pd.to_datetime(df["date"])
-            df["source"] = "akshare"
-            df = self._filter_by_date(df, start_date, end_date)
-            return df[["date", "sec", "open", "high", "low", "close", "volume", "amount", "source"]]
-        except Exception:
-            return pd.DataFrame()
 
     def _fetch_hfq_price(
         self,
