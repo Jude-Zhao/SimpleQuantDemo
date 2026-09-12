@@ -25,7 +25,7 @@ from core.analysis import (
     calculate_icir,
     calculate_rank_ic,
 )
-from core.backtest import BacktestConfig, BacktestResult, run_backtest
+from core.backtest import BacktestConfig, calculate_metrics, run_backtest
 from core.data import DataSource, SqliteDataSource
 from core.factors.base import FactorBuilder
 from core.synthesis.faa_eaa import normalize_cross_section
@@ -35,7 +35,7 @@ _DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "simple_quant.db
 
 @dataclass
 class BacktestSummary:
-    """Lightweight backtest summary (metrics computed without quantstats)."""
+    """Lightweight backtest summary (metrics from the unified framework)."""
 
     metrics: dict[str, float]
     equity_curve: pd.Series
@@ -85,7 +85,7 @@ def evaluate_factor(
     backtest_weight_mode: str = "equal",
     backtest_max_weight: float = 1.0,
     backtest_min_weight: float = 0.0,
-    transaction_cost_bps: float = 1.0,
+    transaction_cost_bps: float = 0.5,
 ) -> FactorEvaluation:
     """Evaluate a single factor and return IC / RankIC / ICIR (+ optional backtest).
 
@@ -109,10 +109,7 @@ def evaluate_factor(
         backtest_top_n: Number of holdings for the backtest.
         backtest_weight_mode: "equal" (Top-N equal weight) or "score".
         backtest_max_weight / backtest_min_weight: Per-security weight bounds.
-        transaction_cost_bps: Round-trip cost in bps applied on rebalance dates.
-
-    Returns:
-        A :class:`FactorEvaluation` with IC statistics (and ``backtest`` if enabled).
+        transaction_cost_bps: 统一框架费率（基点），默认 0.5 = 万分之0.5。
     """
     if price_data is None:
         ds = data_source or SqliteDataSource(_DEFAULT_DB)
@@ -176,11 +173,12 @@ def evaluate_factor(
                 transaction_cost_bps=transaction_cost_bps,
             ),
         )
+        metrics = calculate_metrics(result)
         backtest_summary = BacktestSummary(
-            metrics=_compute_metrics(result),
+            metrics=metrics,
             equity_curve=result.equity_curve,
-            n_rebalances=len(result.rebalance_dates),
-            turnover_sum=float(result.turnover.sum()),
+            n_rebalances=int(metrics["rebalance_count"]),
+            turnover_sum=float(metrics["turnover_sum"]),
         )
 
     return FactorEvaluation(
@@ -208,32 +206,3 @@ def _infer_universe(price_data: pd.DataFrame, field: str = "sec") -> list[str]:
         "Cannot infer universe: price_data has no '%s' column and 'universe' "
         "was not provided." % field
     )
-
-
-def _compute_metrics(result: BacktestResult) -> dict[str, float]:
-    """Compute basic performance metrics from a backtest result (no quantstats)."""
-    equity = result.equity_curve
-    daily = result.daily_returns.astype(float)
-    if equity.empty or len(equity) < 2:
-        return {
-            "total_return": 0.0,
-            "annual_return": 0.0,
-            "annual_volatility": 0.0,
-            "sharpe": 0.0,
-            "max_drawdown": 0.0,
-        }
-
-    total = float(equity.iloc[-1] / equity.iloc[0] - 1)
-    n = len(equity)
-    annual = float((1 + total) ** (252 / n) - 1) if total > -1 else -1.0
-    vol = float(daily.std() * (252**0.5))
-    sharpe = float((annual - 0.02) / vol) if vol > 0 else 0.0
-    max_dd = float((equity / equity.cummax() - 1).min())
-
-    return {
-        "total_return": round(total, 6),
-        "annual_return": round(annual, 6),
-        "annual_volatility": round(vol, 6),
-        "sharpe": round(sharpe, 6),
-        "max_drawdown": round(max_dd, 6),
-    }

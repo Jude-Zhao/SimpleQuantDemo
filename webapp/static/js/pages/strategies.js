@@ -358,15 +358,13 @@ async function runStrategy() {
         resetButton();
 
         // Rebuild the summary-shaped object from the persisted result_summary.
+        // 传递完整 result_summary（含 decision/execution/constraint 明细），
+        // 不能只挑字段导致明细丢失。
         const rs = detail.result_summary || {};
         const summary = {
             status: detail.status,
             error_msg: detail.error_msg,
-            metrics: rs.metrics || {},
-            nav_series: rs.equity_curve || {},
-            latest_weights: rs.latest_weights || {},
-            latest_data_date: rs.latest_data_date || null,
-            constraint_violations: rs.constraint_violations || [],
+            ...rs,
         };
         await renderRunSummary(resultEl, summary);
         renderConstraintCheck(constraintPanel, summary);
@@ -384,17 +382,143 @@ function renderConstraintCheck(panel, summary) {
         panel.innerHTML = `<div class="alert alert-error">运行失败: ${Utils.escapeHtml(summary.error_msg || "未知错误")}</div>`;
         return;
     }
+    // 约束仅提示（OPT-04）：检查结果不代表强制调整——不改变组合、权重或成交。
+    const advisoryNote = `<div style="font-size:12px;margin-top:4px;">约束为仅提示模式：违反不会改变组合权重或中止回测</div>`;
+    // 旧无版本记录：constraint_violations 仅覆盖旧范围检查，不能推断全部调仓通过。
+    if (!summary.schema_version) {
+        panel.innerHTML = `<div class="alert alert-info" style="font-size:13px;">该历史运行未记录逐次约束检查（旧记录仅旧范围检查，不代表全部调仓通过）</div>`;
+        return;
+    }
     if (summary.constraint_violations && summary.constraint_violations.length) {
         panel.innerHTML = `<div class="alert alert-warning">
-            <strong>存在 ${summary.constraint_violations.length} 项约束警告</strong>
+            <strong>存在 ${summary.constraint_violations.length} 项约束提示</strong>
             <ul style="margin-top:6px;">${summary.constraint_violations
                 .map((v) => `<li style="font-size:13px;">${Utils.escapeHtml(v.message)}</li>`)
                 .join("")}</ul>
+            ${advisoryNote}
         </div>`;
     } else {
-        panel.innerHTML = `<div class="alert alert-success">✅ 约束校验通过
-            <div style="font-size:12px;margin-top:4px;">组合满足单票权重与分类约束要求</div></div>`;
+        panel.innerHTML = `<div class="alert alert-success">✅ 约束检查通过
+            ${advisoryNote}</div>`;
     }
+}
+
+// B7：决策日明细渲染器（只读快照）。运行完成页与历史弹窗共用，
+// 不调用 ensureUniverseNameMap、行情或 API 补历史名称。
+function renderRunDiagnostics(resultSummary, container) {
+    if (!container) return;
+    if (!resultSummary || typeof resultSummary !== "object") {
+        container.innerHTML = `<div class="empty-state"><div class="empty-title">无结果数据</div></div>`;
+        return;
+    }
+    const version = resultSummary.schema_version;
+    if (!version) {
+        container.innerHTML = `<div class="alert alert-info" style="font-size:13px;">该历史运行未记录资格明细</div>`;
+        return;
+    }
+    if (version !== "2") {
+        container.innerHTML = `<div class="alert alert-info" style="font-size:13px;">不支持该结果版本（schema_version=${Utils.escapeHtml(String(version))}），明细不可用</div>`;
+        return;
+    }
+    const decisionLog = Array.isArray(resultSummary.decision_log) ? resultSummary.decision_log : null;
+    const executionLog = Array.isArray(resultSummary.execution_log) ? resultSummary.execution_log : null;
+    const constraintChecks = Array.isArray(resultSummary.constraint_checks) ? resultSummary.constraint_checks : null;
+    if (!decisionLog || !executionLog || !constraintChecks) {
+        container.innerHTML = `<div class="alert alert-error" style="font-size:13px;">结果明细结构损坏，明细不可用</div>`;
+        return;
+    }
+
+    const ctx = resultSummary.run_context || {};
+    const nameMap = ctx.sec_names || {};
+    const execByDate = {};
+    executionLog.forEach((e) => {
+        if (!(e.decision_date in execByDate)) execByDate[e.decision_date] = e;
+    });
+
+    const describeExclusions = (exclusions) => {
+        if (!exclusions || !exclusions.length) return "无排除";
+        return exclusions.map((x) => {
+            const name = nameMap[x.sec] || x.sec;
+            const factorTag = x.factor
+                ? ` @${Utils.escapeHtml(x.factor)}${x.instance_index !== null && x.instance_index !== undefined ? `#${x.instance_index}` : ""}`
+                : "";
+            return `${Utils.escapeHtml(name)}（${Utils.escapeHtml(x.sec)}）: ${Utils.escapeHtml(x.reason || "-")}${factorTag}`;
+        }).join("；");
+    };
+
+    const decisionRows = decisionLog.map((d) => {
+        const ex = execByDate[d.decision_date];
+        let genLabel = d.status === "target_created" ? "生成组合" : "资格不足跳过";
+        let execLabel;
+        if (d.status === "skipped_insufficient") {
+            execLabel = "—（未生成目标）";
+        } else if (!ex) {
+            execLabel = "未执行（末日信号）";
+        } else if (ex.status === "executed") {
+            execLabel = "已执行";
+        } else if (ex.status === "cancelled_missing_price") {
+            execLabel = `取消（缺价: ${(ex.missing_codes || []).map((c) => Utils.escapeHtml(c)).join(", ") || "-"})`;
+        } else if (ex.status === "no_trade") {
+            execLabel = "无交易";
+        } else if (ex.status === "unexecuted_end") {
+            execLabel = "未执行（末日信号）";
+        } else {
+            execLabel = "未执行";
+        }
+        return `<tr>
+            <td class="mono">${Utils.escapeHtml(d.decision_date)}</td>
+            <td>${genLabel}</td>
+            <td>${d.eligible_count}/${d.top_n}</td>
+            <td style="max-width:320px;font-size:12px;">${describeExclusions(d.exclusions)}</td>
+            <td>${execLabel}</td>
+        </tr>`;
+    }).join("");
+
+    const constraintRows = constraintChecks.map((c) => {
+        const scopeLabel = c.scope === "history" ? "历史调仓" : "最新推荐";
+        const dateLabel = c.execution_date || c.decision_date || "-";
+        let statusLabel;
+        if (c.status !== "checked") {
+            statusLabel = "未评价";
+        } else if (c.violations && c.violations.length) {
+            statusLabel = `<span class="error-text">${c.violations.length} 项违反</span>`;
+        } else {
+            statusLabel = "通过";
+        }
+        const detail = (c.violations || [])
+            .map((v) => {
+                const limitText = v.limit !== null && v.limit !== undefined ? `（实际 ${v.actual ?? "-"} / 限制 ${v.limit}${v.unit ? " " + v.unit : ""}）` : "";
+                return `${Utils.escapeHtml(v.message)}${limitText}`;
+            })
+            .join("；");
+        const notEvaluated = (c.not_evaluated_constraints || []).join(", ");
+        const unsupported = (c.unsupported_constraints || []).join(", ");
+        const extras = [];
+        if (notEvaluated) extras.push(`未评价: ${Utils.escapeHtml(notEvaluated)}`);
+        if (unsupported) extras.push(`不支持: ${Utils.escapeHtml(unsupported)}`);
+        return `<tr>
+            <td>${scopeLabel}</td>
+            <td class="mono">${Utils.escapeHtml(dateLabel)}</td>
+            <td>${statusLabel}</td>
+            <td style="max-width:320px;font-size:12px;">${detail || "-"}${extras.length ? `<div class="text-muted" style="font-size:11px;">${extras.join("；")}</div>` : ""}</td>
+        </tr>`;
+    }).join("");
+
+    container.innerHTML = `
+        <div class="card-title card-title-sm" style="margin-top:12px;">决策日明细（${decisionLog.length} 个计划调仓日）</div>
+        <div class="table-wrap">
+            <table class="table">
+                <thead><tr><th>决策日</th><th>组合生成</th><th>合格数/TopN</th><th>不合格标的及原因</th><th>执行状态</th></tr></thead>
+                <tbody>${decisionRows || `<tr><td colspan="5" class="text-muted">无记录</td></tr>`}</tbody>
+            </table>
+        </div>
+        <div class="card-title card-title-sm" style="margin-top:12px;">约束检查（仅提示，不强制调整）</div>
+        <div class="table-wrap">
+            <table class="table">
+                <thead><tr><th>范围</th><th>日期</th><th>结果</th><th>明细</th></tr></thead>
+                <tbody>${constraintRows || `<tr><td colspan="4" class="text-muted">无记录</td></tr>`}</tbody>
+            </table>
+        </div>`;
 }
 
 async function renderRunSummary(el, summary) {
@@ -431,10 +555,13 @@ async function renderRunSummary(el, summary) {
                 )}</div>
                 <div id="latest-holdings" class="holdings-table-wrap"></div>
             </div>
-        </div>`;
+        </div>
+        <div id="run-diagnostics"></div>`;
 
-    renderNavChart(summary.nav_series);
+    renderNavChart(summary.equity_curve || summary.nav_series || {});
     await renderLatestHoldings(summary.latest_weights);
+    // 决策日/执行/约束明细：与历史弹窗共用同一渲染器，只读快照。
+    renderRunDiagnostics(summary, document.getElementById("run-diagnostics"));
 }
 
 function renderNavChart(navSeries) {
@@ -564,9 +691,15 @@ async function viewRunDetail(id) {
                     <div><span class="text-muted">最大回撤:</span> ${Utils.formatPct(m.max_drawdown)}</div>
                     <div><span class="text-muted">创建时间:</span> ${Utils.formatDate(detail.created_at)}</div>
                     ${detail.error_msg ? `<div><span class="text-muted">错误:</span> <span class="error-text">${Utils.escapeHtml(detail.error_msg)}</span></div>` : ""}
-                </div>`,
+                </div>
+                <div id="run-detail-diagnostics"></div>`,
             actions: [{ label: "关闭" }],
         });
+        // 与运行完成页共用同一渲染器；只读快照，不调用行情/名称 API。
+        renderRunDiagnostics(
+            detail.result_summary,
+            document.getElementById("run-detail-diagnostics")
+        );
     } catch (e) {
         Components.toast(`加载失败: ${e.message}`, "error");
     }

@@ -64,7 +64,7 @@ def test_calculate_backtest_summary_has_expected_fields(tmp_path: Path, test_db_
     assert summary["rebalance_count"] > 0
     assert summary["cost_sum"] >= 0
     assert -1 <= summary["max_drawdown"] <= 0
-    # Performance metrics are delegated to quantstats.
+    # Performance metrics come from the unified framework (core.backtest.metrics).
     assert "sortino" in summary.index
     assert "calmar" in summary.index
     assert summary["sharpe"] == summary["sharpe"]  # not NaN on a valid run

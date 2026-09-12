@@ -8,6 +8,7 @@ from core.optimization.constraints import (
     validate_constraints,
 )
 from core.optimization.equal_weight import EqualWeightOptimizer
+from core.optimization.exceptions import OptimizationError
 from core.optimization.score_weight import ScoreWeightedOptimizer
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "ConstraintViolation",
     "EqualWeightOptimizer",
     "OptimizationConstraints",
+    "OptimizationError",
     "PortfolioOptimizer",
     "ScoreWeightedOptimizer",
     "validate_constraints",

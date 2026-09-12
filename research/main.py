@@ -7,18 +7,19 @@ Pipeline:
    (IC / RankIC / ICIR / collinearity) — for research, not for driving the
    portfolio.
 3. Combine category scores into the selected strategy composite (FAA or EAA).
-4. Compute target weights on rebalance dates with the core optimizers.
-5. Run the bt-based backtest and produce quantstats-based metrics + outputs.
+4. Compute sparse target weights on rebalance dates via the unified framework
+   (eligibility-checked), then run the single authoritative execution ledger.
+5. Compute metrics via the unified metrics implementation and write outputs.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+import json
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import pandas as pd
-import quantstats as qs
 
 from core.analysis import (
     analyze_collinearity,
@@ -27,12 +28,20 @@ from core.analysis import (
     calculate_icir,
     calculate_rank_ic,
 )
+from core.backtest import (
+    BacktestConfig,
+    BacktestResult,
+    ExecutionConfig,
+    MetricsConfig,
+    calculate_metrics,
+)
+from core.backtest.engine import execute_backtest
+from core.backtest.targets import build_target_weights
 from core.calendar import generate_rebalance_dates, get_trading_dates
 from core.data import SqliteDataSource
 from core.factors.utils import pivot_price_field
-from core.optimization import EqualWeightOptimizer, ScoreWeightedOptimizer
-from core.synthesis import build_category_scores, eaa_composite, faa_composite
-from research.bt_engine import BTBacktestResult, run_bt_backtest
+from core.synthesis import eaa_composite, faa_composite
+from core.synthesis.eligibility import build_category_scores_with_details
 from research.config import ResearchConfig, default_research_config
 from research.factors.config import load_research_categories
 from research.factors.registry import resolve_factor_class
@@ -43,7 +52,7 @@ from research.visualization import plot_equity_curve, plot_factor_stats, plot_la
 class ResearchRunResult:
     """Outputs from one research pipeline run."""
 
-    backtest: BTBacktestResult
+    backtest: BacktestResult
     selected_factors: list[str]
     dropped_factors: list[str]
     warnings: list[str]
@@ -135,9 +144,13 @@ def _build_composite(
     universe: list[str],
     categories: tuple,
     config: ResearchConfig,
-) -> pd.DataFrame:
-    """Build the FAA or EAA composite score matrix."""
-    category_scores = build_category_scores(
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build the FAA or EAA composite score matrix with eligibility details.
+
+    Returns (composite, decision_issues)。合成跨启用类别取有效性 AND；
+    decision_issues 供 build_target_weights 记录逐日资格明细。
+    """
+    detail = build_category_scores_with_details(
         price_data,
         universe,
         categories,
@@ -147,52 +160,11 @@ def _build_composite(
         exponents = config.exponents or {
             cat.key: 1.0 for cat in categories if not cat.is_empty
         }
-        return eaa_composite(category_scores, exponents, config.beta)
+        return eaa_composite(detail.scores, exponents, config.beta), detail.issues
     class_weights = config.class_weights or {
         cat.key: 1.0 for cat in categories if not cat.is_empty
     }
-    return faa_composite(category_scores, class_weights)
-
-
-def _build_target_weights(
-    close: pd.DataFrame,
-    scores: pd.DataFrame,
-    config: ResearchConfig,
-) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
-    """Compute target weights on rebalance dates and forward-fill."""
-    rebalance_dates = generate_rebalance_dates(
-        trading_dates=close.index,
-        rebalance_freq=config.rebalance_freq,
-        rebalance_day=0,
-    )
-    optimizer = (
-        ScoreWeightedOptimizer(
-            top_n=config.top_n,
-            max_weight=config.max_weight,
-            min_weight=config.min_weight,
-        )
-        if config.weight_mode == "score"
-        else EqualWeightOptimizer(
-            top_n=config.top_n,
-            max_weight=config.max_weight,
-            min_weight=config.min_weight,
-        )
-    )
-    target_weights = pd.DataFrame(
-        pd.NA, index=close.index, columns=close.columns, dtype="Float64"
-    )
-    for date in rebalance_dates:
-        if date not in scores.index:
-            continue
-        score_row = scores.loc[date].dropna()
-        # Skip rebalance dates with fewer eligible securities than top_n
-        # (e.g. during data warm-up when many factors are still NaN).
-        if len(score_row) < config.top_n:
-            continue
-        target_weights.loc[date] = optimizer.optimize(score_row)
-
-    filled = target_weights.ffill().fillna(0.0).astype(float)
-    return filled, rebalance_dates
+    return faa_composite(detail.scores, class_weights), detail.issues
 
 
 def run_research(config: ResearchConfig) -> ResearchRunResult:
@@ -215,27 +187,57 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
         price_data, factor_panel, config, eval_start=eval_start
     )
 
-    composite = _build_composite(price_data, universe, categories, config)
+    composite, decision_issues = _build_composite(price_data, universe, categories, config)
 
+    # Backtest window: clip to the evaluation start date; trading dates are the
+    # window's date union (never intersected with valid factor dates).
     close = pivot_price_field(price_data, field="close", universe=universe)
     close = close.loc[
         close.index.intersection(composite.index), composite.columns
     ].sort_index()
-    # Backtest only from the evaluation start date onward.
     close = close.loc[close.index >= eval_start]
     scores = composite.loc[close.index, close.columns].sort_index()
 
-    target_weights, _rebalance_dates = _build_target_weights(close, scores, config)
-    backtest_result = run_bt_backtest(
-        close=close,
-        target_weights=target_weights,
+    bt_config = BacktestConfig(
         rebalance_freq=config.rebalance_freq,
+        top_n=config.top_n,
+        max_weight=config.max_weight,
+        min_weight=config.min_weight,
+        weight_mode=config.weight_mode,
+        transaction_cost_bps=config.transaction_cost_bps,
     )
-    summary = calculate_backtest_summary(backtest_result)
+    plan = build_target_weights(
+        scores,
+        close.index,
+        bt_config,
+        decision_issues=decision_issues,
+    )
+    result = execute_backtest(
+        close,
+        plan.target_weights,
+        ExecutionConfig(initial_cash=1.0, transaction_cost_bps=config.transaction_cost_bps),
+    )
+    result = replace(
+        result,
+        decision_log=plan.decision_log,
+        rebalance_dates=plan.rebalance_dates,
+        config_snapshot={
+            **result.config_snapshot,
+            "selection": {
+                "rebalance_freq": bt_config.rebalance_freq,
+                "rebalance_day": bt_config.rebalance_day,
+                "top_n": bt_config.top_n,
+                "max_weight": bt_config.max_weight,
+                "min_weight": bt_config.min_weight,
+                "weight_mode": bt_config.weight_mode,
+            },
+        },
+    )
+    summary = calculate_backtest_summary(result)
 
     output_paths = write_research_outputs(
         output_dir=config.output_dir,
-        backtest_result=backtest_result,
+        backtest_result=result,
         summary=summary,
         ic_data=ic_data,
         rank_ic_data=rank_ic_data,
@@ -246,7 +248,7 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
     )
 
     return ResearchRunResult(
-        backtest=backtest_result,
+        backtest=result,
         selected_factors=list(factor_panel),
         dropped_factors=[],
         warnings=warnings,
@@ -256,44 +258,19 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
 
 
 def calculate_backtest_summary(
-    result: BTBacktestResult,
+    result: BacktestResult,
     annualization: int = 252,
 ) -> pd.Series:
-    """Calculate performance metrics with quantstats.
-
-    Annual return / volatility / Sharpe / drawdown / Sortino / Calmar / win
-    rate are delegated to ``quantstats``. Turnover and rebalance counts are
-    derived from the target-weight matrix held by ``result.weights``. The bt
-    engine is not configured with a commission model, so ``cost_sum`` is 0.
-    """
-    returns = result.daily_returns.astype(float)
-    equity_curve = result.equity_curve.astype(float)
-    total_return = equity_curve.iloc[-1] - 1.0
-    turnover = result.weights.diff().abs().sum(axis=1)
-    turnover_sum = float(turnover.sum())
-    rebalance_count = int((turnover > 0).sum())
-
+    """统一指标包装器：只映射 core.backtest.calculate_metrics，不计算任何公式。"""
     return pd.Series(
-        {
-            "total_return": total_return,
-            "annual_return": qs.stats.cagr(returns, periods=annualization),
-            "annual_volatility": qs.stats.volatility(returns, periods=annualization),
-            "sharpe": qs.stats.sharpe(returns, periods=annualization),
-            "max_drawdown": qs.stats.max_drawdown(returns),
-            "sortino": qs.stats.sortino(returns, periods=annualization),
-            "calmar": qs.stats.calmar(returns, periods=annualization),
-            "win_rate": qs.stats.win_rate(returns),
-            "turnover_sum": turnover_sum,
-            "cost_sum": 0.0,
-            "rebalance_count": rebalance_count,
-        },
+        calculate_metrics(result, MetricsConfig(annualization=annualization)),
         name="summary",
     )
 
 
 def write_research_outputs(
     output_dir: Path,
-    backtest_result: BTBacktestResult,
+    backtest_result: BacktestResult,
     summary: pd.Series,
     ic_data: dict[str, pd.Series],
     rank_ic_data: dict[str, pd.Series],
@@ -302,11 +279,18 @@ def write_research_outputs(
     warnings: list[str],
     dropped_factors: list[str],
 ) -> dict[str, Path]:
-    """Write research outputs to CSV/TXT files."""
+    """Write research outputs to CSV/JSON/TXT files.
+
+    weights.csv 为实际日末持仓权重（不再是目标权重）；target_weights.csv /
+    trades.csv / decision_log.json 用于交易与资格复核。
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "equity_curve": output_dir / "equity_curve.csv",
         "weights": output_dir / "weights.csv",
+        "target_weights": output_dir / "target_weights.csv",
+        "trades": output_dir / "trades.csv",
+        "decision_log": output_dir / "decision_log.json",
         "summary": output_dir / "summary.csv",
         "factor_stats": output_dir / "factor_stats.csv",
         "synthesized_scores": output_dir / "synthesized_scores.csv",
@@ -320,6 +304,26 @@ def write_research_outputs(
         columns={"index": "date", "equity": "equity"}
     ).to_csv(paths["equity_curve"], index=False, encoding="utf-8-sig")
     backtest_result.weights.to_csv(paths["weights"], encoding="utf-8-sig")
+    backtest_result.target_weights.to_csv(paths["target_weights"], encoding="utf-8-sig")
+    backtest_result.trades.to_csv(paths["trades"], index=False, encoding="utf-8-sig")
+    decision_log_payload = [
+        {
+            "decision_date": str(pd.Timestamp(e["decision_date"]).date()),
+            "eligible_count": e["eligible_count"],
+            "top_n": e["top_n"],
+            "status": e["status"],
+            "exclusions": [
+                {k: (None if v is None else str(v) if not isinstance(v, dict) else v)
+                 for k, v in ex.items()}
+                for ex in e["exclusions"]
+            ],
+        }
+        for e in backtest_result.decision_log
+    ]
+    paths["decision_log"].write_text(
+        json.dumps(decision_log_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     summary.rename("value").reset_index().to_csv(
         paths["summary"], index=False, encoding="utf-8-sig"
     )

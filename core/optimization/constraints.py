@@ -34,11 +34,20 @@ class OptimizationConstraints:
 
 @dataclass
 class ConstraintViolation:
-    """A single constraint violation."""
+    """A single constraint violation.
+
+    target/actual/limit/unit 为可选结构化字段（B7）：target 是对象代码或
+    类别标识，actual/limit 是实际值与限制值，unit 标注单位（weight/turnover）。
+    携带结构化数值，消费方不得从 message 字符串解析数值。
+    """
 
     constraint: str
     message: str
     severity: str = "error"  # "error" or "warning"
+    target: Optional[str] = None
+    actual: Optional[float] = None
+    limit: Optional[float] = None
+    unit: Optional[str] = None  # "weight" | "turnover"
 
 
 def validate_constraints(
@@ -82,6 +91,10 @@ def validate_constraints(
                             f"Weight {w:.4f} for {code} is below "
                             f"single_min_weight={constraints.single_min_weight:.4f}."
                         ),
+                        target=code,
+                        actual=float(w),
+                        limit=float(constraints.single_min_weight),
+                        unit="weight",
                     )
                 )
 
@@ -95,6 +108,10 @@ def validate_constraints(
                             f"Weight {w:.4f} for {code} exceeds "
                             f"single_max_weight={constraints.single_max_weight:.4f}."
                         ),
+                        target=code,
+                        actual=float(w),
+                        limit=float(constraints.single_max_weight),
+                        unit="weight",
                     )
                 )
 
@@ -107,6 +124,7 @@ def validate_constraints(
         ]
         cat_weight = sum(positive[code] for code in members)
         cat_count = len(members)
+        cat_target = f"{cat.category_key}={cat.category_value}"
 
         if cat.min_weight is not None and cat_weight < cat.min_weight:
             violations.append(
@@ -116,6 +134,10 @@ def validate_constraints(
                         f"Category '{cat.category_value}' weight {cat_weight:.4f} is "
                         f"below min_weight={cat.min_weight:.4f}."
                     ),
+                    target=cat_target,
+                    actual=float(cat_weight),
+                    limit=float(cat.min_weight),
+                    unit="weight",
                 )
             )
         if cat.max_weight is not None and cat_weight > cat.max_weight:
@@ -126,6 +148,10 @@ def validate_constraints(
                         f"Category '{cat.category_value}' weight {cat_weight:.4f} exceeds "
                         f"max_weight={cat.max_weight:.4f}."
                     ),
+                    target=cat_target,
+                    actual=float(cat_weight),
+                    limit=float(cat.max_weight),
+                    unit="weight",
                 )
             )
         if cat.min_count is not None and cat_count < cat.min_count:
@@ -136,6 +162,9 @@ def validate_constraints(
                         f"Category '{cat.category_value}' count {cat_count} is below "
                         f"min_count={cat.min_count}."
                     ),
+                    target=cat_target,
+                    actual=float(cat_count),
+                    limit=float(cat.min_count),
                 )
             )
         if cat.max_count is not None and cat_count > cat.max_count:
@@ -146,6 +175,9 @@ def validate_constraints(
                         f"Category '{cat.category_value}' count {cat_count} exceeds "
                         f"max_count={cat.max_count}."
                     ),
+                    target=cat_target,
+                    actual=float(cat_count),
+                    limit=float(cat.max_count),
                 )
             )
 

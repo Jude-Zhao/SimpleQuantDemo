@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""本地对照：复现 web 端 EAA 回测（真实库 + core 引擎），验证本地链路可信度。
+"""本地对照：复现 web 端 EAA 回测（真实库 + 统一回测框架），验证本地链路可信度。
 
-仅本地诊断使用，非聚宽脚本。目标是复现 web 端 `_run_eaa` 的输出
-（总收益 ~49.25%，年化 ~17.11%，最大回撤 ~16.09%），从而判断 web 与聚宽的差异
-主体到底是"数据源/因子信息差异"还是"交易模型差异"。
+仅本地诊断使用，非聚宽脚本。目标是用统一框架（core.backtest + calculate_metrics）
+复现 web 端 `_run_eaa` 的输出，从而判断 web 与聚宽的差异主体到底是
+"数据源/因子信息差异"还是"交易模型差异"。
 
 口径完全对齐 web：
 - universe = 数据库 active 30 只
@@ -11,17 +11,16 @@
 - composite = eaa_composite(cat_scores, exponents, beta)
 - run_backtest(price_data=回测区间, factor_scores=composite,
                BacktestConfig(5d, top_n=5, weight_mode=score, max/min=1/0))
-- 成交 = 后复权 close + shift(2)（web 口径）
+- 成交 = 统一账本（T+1 收盘执行、份额账本、按成交金额收费）
 - 回测区间 = 2024-01-01 起，到库最后交易日
+- 指标 = core.backtest.calculate_metrics（唯一绩效实现，无风险利率默认 1%）
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
-import quantstats as qs
 
-from core.backtest.engine import BacktestConfig, run_backtest
+from core.backtest import BacktestConfig, calculate_metrics, run_backtest
 from core.data import SqliteDataSource
 from core.factors.config import list_factor_categories
 from core.factors.utils import pivot_price_field
@@ -37,7 +36,6 @@ TOP_N = 5
 
 
 def main() -> None:
-    from pathlib import Path
     from research.config import DEFAULT_DB_PATH
     ds = SqliteDataSource(db_path=DEFAULT_DB_PATH)
 
@@ -54,7 +52,7 @@ def main() -> None:
     composite = eaa_composite(cat_scores, EXPONENTS, BETA)
     print(f"composite 形状: {composite.shape}, 日期 {composite.index.min()} ~ {composite.index.max()}")
 
-    # 回测区间（仅 2024 起）与 file 列对齐
+    # 回测区间（仅 2024 起）与列对齐
     close = pivot_price_field(price_data, field="close", universe=universe)
     close = close.sort_index()
     backtest_price = price_data[price_data["date"] >= pd.Timestamp(BACKTEST_START)]
@@ -62,7 +60,7 @@ def main() -> None:
     print(f"回测区间: {scores.index.min().date()} ~ {scores.index.max().date()}, "
           f"{len(scores)} 交易日")
 
-    # web 口径 = 后复权 close + shift(2)
+    # 统一账本（T+1 收盘执行、份额账本、按成交金额收费）
     result = run_backtest(
         price_data=backtest_price,
         factor_scores=scores,
@@ -75,22 +73,15 @@ def main() -> None:
         ),
     )
 
-    rets = result.daily_returns.astype(float)
-    eq = result.equity_curve.astype(float)
-    total = eq.iloc[-1] - 1.0
-    annual = qs.stats.cagr(rets, periods=252)
-    vol = qs.stats.volatility(rets, periods=252)
-    sharpe = qs.stats.sharpe(rets, periods=252)
-    mdd = qs.stats.max_drawdown(rets)
-    sortino = qs.stats.sortino(rets, periods=252)
-
-    print("\n=== 本地复现 web / EAA 结果 ===")
-    print(f"总收益        {total*100:.2f}%   (web: 49.25%)")
-    print(f"年化收益      {annual*100:.2f}%   (web: 17.11%)")
-    print(f"最大回撤      {mdd*100:.2f}%   (web: -16.09%)")
-    print(f"夏普          {sharpe:.3f}   (web: 0.901)")
-    print(f"策略波动率    {vol*100:.2f}%   (web: -)")
-    print(f"索提诺        {sortino:.3f}   (web: -)")
+    m = calculate_metrics(result)
+    print("\n=== 本地复现 web / EAA 结果（统一框架口径） ===")
+    print(f"总收益        {m['total_return']*100:.2f}%")
+    print(f"年化收益      {m['annual_return']*100:.2f}%")
+    print(f"最大回撤      {m['max_drawdown']*100:.2f}%")
+    print(f"夏普          {m['sharpe']:.3f}")
+    print(f"策略波动率    {m['annual_volatility']*100:.2f}%")
+    print(f"索提诺        {m['sortino']:.3f}")
+    print(f"换手合计      {m['turnover_sum']:.2f}  费用合计 {m['cost_sum']:.6f}")
 
 
 if __name__ == "__main__":

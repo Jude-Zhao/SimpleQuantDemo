@@ -36,6 +36,8 @@ class ResearchConfig:
     min_weight: float = 0.0
     rebalance_freq: str = "5d"  # "5d"（每5个交易日） | "weekly" | "monthly"
     weight_mode: str = "equal"  # "equal" (FAA) | "score" (EAA)
+    # 统一回测框架费率（基点），默认 0.5 = 万分之0.5，与 core.backtest 一致
+    transaction_cost_bps: float = 0.5
 
     # FAA / EAA category-level parameters. Empty dicts default to equal
     # weight / exponent across all non-empty categories.

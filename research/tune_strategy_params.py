@@ -8,13 +8,22 @@ Run:
 Key optimisation: factor category scores are built ONCE from price data and
 reused by every candidate combination (weights only affect the composite
 combination, not the factor matrices).
+
+回测与指标全部经统一框架（core.backtest）执行：build_target_weights +
+execute_backtest + calculate_metrics / calculate_yearly_returns，不再本地
+重算净值、费用或绩效公式。脚本输出为样本内（in-sample）结果，不构成样本外
+证据；不自动把重新排名结果写回生产默认参数。
+
+年度评分分项（BUG-10 已确认）：`year_stability` 已重命名为年度盈利比例
+``year profit ratio`` = 收益>0 的年份数 / 有效年份数（范围 [0,1]，空输入 0，
+零收益不算盈利）。
 """
 from __future__ import annotations
 
 import argparse
 import itertools
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -24,11 +33,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.calendar import generate_rebalance_dates
+from core.backtest import (
+    BacktestConfig,
+    ExecutionConfig,
+    calculate_metrics,
+    calculate_yearly_returns,
+)
+from core.backtest.engine import execute_backtest
+from core.backtest.targets import build_target_weights
 from core.data import SqliteDataSource
 from core.factors.config import list_factor_categories
 from core.factors.utils import pivot_price_field
-from core.optimization import EqualWeightOptimizer, ScoreWeightedOptimizer
 from core.synthesis import build_category_scores, eaa_composite, faa_composite
 
 DB_PATH = PROJECT_ROOT / "data" / "simple_quant.db"
@@ -36,7 +51,8 @@ START = "2021-01-04"
 END = "2026-08-14"
 DATA_START = "2019-11-01"
 TOP_N = 5
-COST_BPS = 1.0
+# 与统一框架默认费率一致（0.5bps = 万分之0.5），不硬编码旧值 1
+COST_BPS = 0.5
 REBALANCE_FREQ = "5d"
 
 # Search spaces
@@ -46,7 +62,7 @@ EAA_BETA_GRID = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
 
 # Scoring weights
 SCORE_W_RETURN = 0.5   # risk-adjusted return (annual/vol)
-SCORE_W_STABILITY = 0.3  # year-stability
+SCORE_W_STABILITY = 0.3  # year profit ratio（年度盈利比例，原 year_stability 分项）
 SCORE_W_DRAWDOWN = 0.2   # (1 - drawdown penalty)
 MDD_REF = -0.25  # reference for drawdown penalty
 
@@ -81,71 +97,61 @@ def _build_category_scores(price_data, categories, universe) -> dict:
     return build_category_scores(price_data, universe, categories)
 
 
-def _target_weights(close, scores, weight_mode) -> pd.DataFrame:
-    reb = generate_rebalance_dates(
-        trading_dates=close.index, rebalance_freq=REBALANCE_FREQ, rebalance_day=0
-    )
-    optimizer = (
-        ScoreWeightedOptimizer(top_n=TOP_N, max_weight=1.0, min_weight=0.0)
-        if weight_mode == "score"
-        else EqualWeightOptimizer(top_n=TOP_N, max_weight=1.0, min_weight=0.0)
-    )
-    target = pd.DataFrame(pd.NA, index=close.index, columns=close.columns, dtype="Float64")
-    for date in reb:
-        if date not in scores.index:
-            continue
-        row = scores.loc[date].dropna()
-        if len(row) < TOP_N:
-            continue
-        target.loc[date] = optimizer.optimize(row)
-    return target.ffill().fillna(0.0).astype(float)
+def _backtest(close, composite, weight_mode) -> tuple:
+    """统一框架回测；返回 (BacktestResult, 实际成交次数) 元组适配。
 
-
-def _backtest(close, composite, weight_mode) -> tuple[pd.Series, pd.Series, int]:
+    不保留任何独立收益公式——净值/费用/换手全部来自 execute_backtest。
+    """
     scores = composite.loc[close.index, close.columns].sort_index()
-    weights = _target_weights(close, scores, weight_mode)
-    reb = generate_rebalance_dates(
-        trading_dates=close.index, rebalance_freq=REBALANCE_FREQ, rebalance_day=0
+    cfg = BacktestConfig(
+        rebalance_freq=REBALANCE_FREQ,
+        top_n=TOP_N,
+        max_weight=1.0,
+        min_weight=0.0,
+        weight_mode=weight_mode,
+        transaction_cost_bps=COST_BPS,
     )
-    reb = reb[reb.isin(close.index)]
-    turnover = weights.diff().abs().sum(axis=1)
-    costs = turnover * COST_BPS / 10000
-    close_ret = close.pct_change(fill_method=None).fillna(0.0)
-    rets = (weights.shift(2).fillna(0.0) * close_ret).sum(axis=1) - costs
-    equity = (1.0 + rets).cumprod()
-    return equity, rets, len(reb)
+    plan = build_target_weights(scores, close.index, cfg)
+    result = execute_backtest(
+        close, plan.target_weights, ExecutionConfig(initial_cash=1.0, transaction_cost_bps=COST_BPS)
+    )
+    result = replace(
+        result,
+        decision_log=plan.decision_log,
+        rebalance_dates=plan.rebalance_dates,
+    )
+    return result, int(calculate_metrics(result)["rebalance_count"])
 
 
-def _metrics(equity: pd.Series, rets: pd.Series, n_reb: int) -> dict:
-    total = float(equity.iloc[-1] / equity.iloc[0] - 1)
-    n = len(equity)
-    annual = float((1 + total) ** (252 / n) - 1) if total > -1 else -1.0
-    vol = float(rets.std() * np.sqrt(252))
-    sharpe = float((annual - 0.02) / vol) if vol > 0 else 0.0
-    mdd = float((equity / equity.cummax() - 1).min())
-    yearly = {year: float((1 + grp).prod() - 1.0)
-              for year, grp in rets.groupby(rets.index.year)}
-    return {"total": total, "annual": annual, "vol": vol, "sharpe": sharpe,
-            "mdd": mdd, "yearly": yearly, "n_reb": n_reb}
+def _metrics(result, n_reb: int) -> dict:
+    """统一指标映射：calculate_metrics + calculate_yearly_returns，不重算公式。"""
+    m = calculate_metrics(result)
+    yearly = calculate_yearly_returns(result.daily_returns)
+    return {
+        "total": float(m["total_return"]),
+        "annual": float(m["annual_return"]),
+        "vol": float(m["annual_volatility"]),
+        "sharpe": float(m["sharpe"]),
+        "mdd": float(m["max_drawdown"]),
+        "yearly": yearly,
+        "n_reb": int(n_reb),
+    }
 
 
-def _year_stability(yearly: dict) -> float:
-    if not yearly:
+def _year_profit_ratio(yearly: dict) -> float:
+    """年度盈利比例（BUG-10）：收益>0 的年份数 / 有效年份数。
+
+    空输入为 0；范围 [0,1]；零收益不算盈利；微小年度差异不发散。
+    """
+    vals = [float(v) for v in yearly.values() if np.isfinite(v)]
+    if not vals:
         return 0.0
-    vals = list(yearly.values())
-    win_rate = sum(1 for v in vals if v > 0) / len(vals)
-    worst = min(vals)
-    best = max(vals)
-    if best == worst:
-        worst_norm = 0.0
-    else:
-        worst_norm = worst / (worst - best)  # in (-inf, 0], closer to 0 = more robust
-    return 0.5 * win_rate + 0.5 * worst_norm
+    return sum(1 for v in vals if v > 0) / len(vals)
 
 
 def _score(m: dict) -> float:
     ra = m["annual"] / m["vol"] if m["vol"] > 0 else 0.0
-    stab = _year_stability(m["yearly"])
+    stab = _year_profit_ratio(m["yearly"])
     mdd_pen = m["mdd"] / MDD_REF  # mdd negative -> positive penalty
     return SCORE_W_RETURN * ra + SCORE_W_STABILITY * stab + SCORE_W_DRAWDOWN * (1.0 - mdd_pen)
 
@@ -196,8 +202,8 @@ def _run_faa(close, category_scores) -> list[ScenarioResult]:
     for params in _faa_combos():
         cw = params["class_weights"]
         composite = faa_composite(category_scores, cw)
-        equity, rets, n_reb = _backtest(close, composite, "equal")
-        m = _metrics(equity, rets, n_reb)
+        result, n_reb = _backtest(close, composite, "equal")
+        m = _metrics(result, n_reb)
         results.append(ScenarioResult(
             label="FAA " + ",".join(f"{k}={v:g}" for k, v in cw.items()),
             params=params, score=_score(m), **m,
@@ -211,8 +217,8 @@ def _run_eaa(close, category_scores) -> list[ScenarioResult]:
     for params in _eaa_combos(include_beta=False):
         exp = params["exponents"]
         composite = eaa_composite(category_scores, exp, 1.0)
-        equity, rets, n_reb = _backtest(close, composite, "score")
-        m = _metrics(equity, rets, n_reb)
+        result, n_reb = _backtest(close, composite, "score")
+        m = _metrics(result, n_reb)
         results.append(ScenarioResult(
             label="EAA " + ",".join(f"{k}={v:g}" for k, v in exp.items()) + ",beta=1",
             params=params, score=_score(m), **m,
@@ -226,8 +232,8 @@ def _run_eaa(close, category_scores) -> list[ScenarioResult]:
             if abs(b - 1.0) < 1e-9:
                 continue
             composite = eaa_composite(category_scores, exp, b)
-            equity, rets, n_reb = _backtest(close, composite, "score")
-            m = _metrics(equity, rets, n_reb)
+            result, n_reb = _backtest(close, composite, "score")
+            m = _metrics(result, n_reb)
             results.append(ScenarioResult(
                 label="EAA " + ",".join(f"{k}={v:g}" for k, v in exp.items()) +
                       f",beta={b:g}",
@@ -272,6 +278,8 @@ def main() -> None:
     # Build factor category scores once.
     price_data, close, categories, universe = _load_data()
     print(f"标的数={len(universe)} 区间={close.index[0].date()}~{close.index[-1].date()}")
+    print("注意：以下全部结果为样本内（in-sample）搜索结果，不构成样本外证据；"
+          "不自动写回生产默认参数。")
     category_scores = _build_category_scores(price_data, categories, universe)
 
     if do_faa:

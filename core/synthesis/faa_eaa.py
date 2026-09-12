@@ -88,19 +88,15 @@ def build_category_scores(
 ) -> dict[str, pd.DataFrame]:
     """Return {category_key: category_score_matrix} for non-empty categories.
 
-    Category score = equal-weight mean of per-factor normalized matrices.
+    便捷函数：委托 :func:`build_category_scores_with_details` 构建一次（不重复
+    构建因子），仅返回得分矩阵、丢弃资格明细。严格资格规则（任一必需因子
+    无效则类别得分 NaN）详见 core.synthesis.eligibility。
     """
-    result: dict[str, pd.DataFrame] = {}
-    for cat in categories:
-        if cat.is_empty:
-            continue
-        matrices = build_category_factors(price_data, universe, cat, resolver=resolver)
-        if not matrices:
-            continue
-        score = category_score_from_matrices(matrices)
-        if score is not None:
-            result[cat.key] = score
-    return result
+    # 延迟导入避免循环依赖（eligibility 反向复用本模块的构建/归一化函数）。
+    from core.synthesis.eligibility import build_category_scores_with_details
+
+    result = build_category_scores_with_details(price_data, universe, categories, resolver=resolver)
+    return result.scores
 
 
 def category_score_from_matrices(matrices: list[pd.DataFrame]) -> pd.DataFrame | None:
@@ -137,7 +133,12 @@ def faa_composite(
     class_weights: dict[str, float],
     eps: float = EPS,
 ) -> pd.DataFrame:
-    """FAA composite score: L = Σₖ wₖ · norm(catₖ)."""
+    """FAA composite score: L = Σₖ wₖ · norm(catₖ).
+
+    只遍历正权重类别（零权重类别不参与合成，其缺失不影响资格）；跨类别取
+    有效性 AND——任一启用类别当日无效则合成得分为 NaN，不用 fill_value
+    抹掉缺失。正权重类别缺失（启用但为空）属配置错误。
+    """
     keys = list(category_scores.keys())
     if not keys:
         raise ValueError("No non-empty factor categories to score.")
@@ -149,9 +150,21 @@ def faa_composite(
 
     composite = None
     for wi, key in zip(w, keys):
+        if wi <= 0:
+            continue
         normed = normalize_cross_section(category_scores[key], eps=eps)
         term = normed * wi
-        composite = term if composite is None else composite.add(term, fill_value=0.0)
+        composite = term if composite is None else composite + term
+    if composite is None:
+        raise ValueError("class_weights must contain at least one positive weight.")
+
+    # 启用（正权重）但被配置为空/缺失的类别 → 配置错误，显式拒绝。
+    missing_enabled = {k for k in class_weights if class_weights[k] > 0 and k not in keys}
+    if missing_enabled:
+        raise ValueError(
+            f"启用的类别在配置中为空或缺失: {sorted(missing_enabled)}；"
+            "正权重类别必须包含至少一个因子实例"
+        )
     return composite
 
 
@@ -163,20 +176,29 @@ def eaa_composite(
 ) -> pd.DataFrame:
     """EAA composite score: S = ( Πₖ norm(catₖ)^αₖ )^β.
 
-    Only categories with a positive exponent contribute. A category whose score
-    is entirely NaN is skipped for that day.
+    只遍历正指数类别；跨启用类别取有效性 AND——任一启用类别当日无效则
+    合成得分为 NaN，不用 fill_value 抹掉缺失。正指数类别缺失（启用但为空）
+    属配置错误。
     """
     keys = list(category_scores.keys())
     contributing = [k for k in keys if exponents.get(k, 0.0) > 0]
     if not contributing:
         raise ValueError("exponents must contain at least one positive value.")
 
+    # 启用（正指数）但被配置为空/缺失的类别 → 配置错误，显式拒绝。
+    missing_enabled = {k for k in exponents if exponents[k] > 0 and k not in keys}
+    if missing_enabled:
+        raise ValueError(
+            f"启用的类别在配置中为空或缺失: {sorted(missing_enabled)}；"
+            "正指数类别必须包含至少一个因子实例"
+        )
+
     product = None
     for key in contributing:
         alpha = exponents[key]
         normed = normalize_cross_section(category_scores[key], eps=eps)
         term = normed ** alpha
-        product = term if product is None else product.mul(term, fill_value=1.0)
+        product = term if product is None else product * term
 
     if product is None:
         raise ValueError("No category scores available for EAA composite.")

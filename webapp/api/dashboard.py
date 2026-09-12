@@ -258,19 +258,12 @@ def get_recent_runs(limit: int = 10, db: Session = Depends(get_db)):
 
     result = []
     for run in runs:
-        total_return = None
+        # 只读已存 metrics.total_return；无该指标返回 None（前端显示未记录）。
+        # B7：不再从 equity_curve 字典首尾值重算兜底——列表/详情/导出均只读，
+        # 不为补字段写回数据库。
         summary = run.result_summary or {}
-        # result_summary stored as a raw dict; extract metrics if present,
-        # otherwise fall back to deriving total return from the equity curve
-        # (for runs persisted before metrics was added to the summary).
         raw_metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else None
-        if raw_metrics is not None:
-            total_return = raw_metrics.get("total_return")
-        else:
-            equity = summary.get("equity_curve") or {}
-            values = [v for v in (equity or {}).values() if isinstance(v, (int, float))]
-            if len(values) >= 2:
-                total_return = values[-1] / values[0] - 1
+        total_return = raw_metrics.get("total_return") if raw_metrics is not None else None
 
         result.append(RecentRunItem(
             id=run.id,

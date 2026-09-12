@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 
 from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
+from core.backtest import BacktestConfig, run_backtest
 from core.factors import MACDHistFactor, Drawdown120Factor
 from core.synthesis import ICIRWeightedSynthesizer
-from research.backtest import BacktestConfig, run_backtest
 
 
 def test_run_backtest_minimal_deterministic_case() -> None:
@@ -35,13 +35,22 @@ def test_run_backtest_minimal_deterministic_case() -> None:
         BacktestConfig(top_n=1, max_weight=1.0, transaction_cost_bps=0),
     )
 
-    assert result.weights.loc[pd.Timestamp("2026-01-05"), "A.SH"] == pytest.approx(1.0)
-    # T+1 execution: decision 01-05, executed at 01-06 close, held from 01-07.
+    # 稀疏目标行：决策日 01-05 选 A
+    assert result.target_weights.loc[pd.Timestamp("2026-01-05"), "A.SH"] == pytest.approx(1.0)
+    # T+1 执行：决策 01-05，01-06 收盘以价 2 买入；01-06 收盘后实际持仓 A=1.0
+    assert result.weights.loc[pd.Timestamp("2026-01-05"), "A.SH"] == pytest.approx(0.0)
+    assert result.weights.loc[pd.Timestamp("2026-01-06"), "A.SH"] == pytest.approx(1.0)
     assert result.daily_returns.loc[pd.Timestamp("2026-01-06")] == pytest.approx(0.0)
     assert result.equity_curve.iloc[-1] == pytest.approx(3.0)
 
 
-def test_run_backtest_charges_turnover_cost() -> None:
+def test_run_backtest_charges_turnover_cost_on_execution_day() -> None:
+    """费用记在实际执行日（T+1），不再记在信号日。
+
+    旧实现错误地断言 costs 位于信号日 01-05 且首日净值 0.999——那是在信号日
+    扣费（日期错误）。新时间轴下：决策 01-05 → 执行 01-06，费用 = c×B，
+    B = V/(1+c)，净值 01-06 = 1/(1+c)。
+    """
     dates = pd.date_range("2026-01-05", periods=6, freq="D")
     price_data = pd.DataFrame(
         {
@@ -67,9 +76,15 @@ def test_run_backtest_charges_turnover_cost() -> None:
         BacktestConfig(top_n=1, max_weight=1.0, transaction_cost_bps=10),
     )
 
-    assert result.turnover.loc[pd.Timestamp("2026-01-05")] == pytest.approx(1.0)
-    assert result.costs.loc[pd.Timestamp("2026-01-05")] == pytest.approx(0.001)
-    assert result.equity_curve.iloc[0] == pytest.approx(0.999)
+    # 信号日无费用、无成交
+    assert result.costs.loc[pd.Timestamp("2026-01-05")] == pytest.approx(0.0)
+    assert result.fees.loc[pd.Timestamp("2026-01-05")] == pytest.approx(0.0)
+    # 执行日 01-06：买入金额 = 1/(1+c)，费用 = c/(1+c)，costs = 费用/成交前净值
+    assert result.fees.loc[pd.Timestamp("2026-01-06")] == pytest.approx(0.001 / 1.001)
+    assert result.costs.loc[pd.Timestamp("2026-01-06")] == pytest.approx(0.001 / 1.001)
+    assert result.turnover.loc[pd.Timestamp("2026-01-06")] == pytest.approx(1.0 / 1.001)
+    assert result.equity_curve.iloc[0] == pytest.approx(1.0)
+    assert result.equity_curve.iloc[1] == pytest.approx(1.0 / 1.001)
 
 
 def test_run_backtest_clears_sold_positions_on_rebalance() -> None:
@@ -108,10 +123,15 @@ def test_run_backtest_clears_sold_positions_on_rebalance() -> None:
         BacktestConfig(top_n=1, max_weight=1.0, transaction_cost_bps=0),
     )
 
+    # 01-09：仍持有 A（weights 为实际日末持仓）
     assert result.weights.loc[pd.Timestamp("2026-01-09"), "A.SH"] == pytest.approx(1.0)
     assert result.weights.loc[pd.Timestamp("2026-01-09"), "B.SH"] == pytest.approx(0.0)
-    assert result.weights.loc[pd.Timestamp("2026-01-12"), "A.SH"] == pytest.approx(0.0)
-    assert result.weights.loc[pd.Timestamp("2026-01-12"), "B.SH"] == pytest.approx(1.0)
+    # 决策 01-12（周度决策日）→ 01-13 收盘执行换仓
+    assert result.weights.loc[pd.Timestamp("2026-01-12"), "A.SH"] == pytest.approx(1.0)
+    assert result.weights.loc[pd.Timestamp("2026-01-13"), "A.SH"] == pytest.approx(0.0)
+    assert result.weights.loc[pd.Timestamp("2026-01-13"), "B.SH"] == pytest.approx(1.0)
+    # 目标行区分：01-12 决策日目标为 B（01-13 执行）
+    assert result.target_weights.loc[pd.Timestamp("2026-01-12"), "B.SH"] == pytest.approx(1.0)
 
 
 def test_run_backtest_with_example_pipeline(sqlite_source) -> None:

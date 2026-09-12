@@ -15,10 +15,11 @@ def test_latest_recommendation_equal_weight() -> None:
         {"A.SH": [3.0, 3.0, 3.0], "B.SH": [2.0, 2.0, 2.0], "C.SH": [1.0, 1.0, 1.0]},
         index=dates,
     )
-    weights, date = _latest_recommendation(
+    weights, date, reason = _latest_recommendation(
         composite, EqualWeightOptimizer(top_n=2, max_weight=1.0)
     )
     assert date == "2026-01-03"
+    assert reason is None
     assert set(weights) == {"A.SH", "B.SH"}
     assert weights["A.SH"] == pytest.approx(0.5)
     assert weights["B.SH"] == pytest.approx(0.5)
@@ -30,10 +31,28 @@ def test_latest_recommendation_score_weighted() -> None:
         {"A.SH": [3.0, 3.0], "B.SH": [1.0, 1.0]},
         index=dates,
     )
-    weights, date = _latest_recommendation(
+    weights, date, reason = _latest_recommendation(
         composite, ScoreWeightedOptimizer(top_n=2, max_weight=1.0)
     )
     assert date == "2026-01-02"
+    assert reason is None
     # score-proportional: 3/4 and 1/4
     assert weights["A.SH"] == pytest.approx(0.75)
     assert weights["B.SH"] == pytest.approx(0.25)
+
+
+def test_latest_recommendation_insufficient_returns_empty_with_reason() -> None:
+    """最新因子日合格证券不足：返回空持仓 + 明确理由，不回填旧推荐。"""
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    # 前一日 3 只合格，最新日仅 1 只：不得回填前一日组合
+    composite = pd.DataFrame(
+        {"A.SH": [3.0, 3.0], "B.SH": [2.0, float("nan")], "C.SH": [1.0, float("nan")]},
+        index=dates,
+    )
+    weights, date, reason = _latest_recommendation(
+        composite, EqualWeightOptimizer(top_n=3, max_weight=1.0)
+    )
+    assert date == "2026-01-02"
+    assert weights == {}
+    assert reason is not None
+    assert "合格证券不足" in reason

@@ -23,6 +23,7 @@ from webapp.services.classification_service import (
     list_rules,
     update_rule,
 )
+from webapp.services.constraint_service import DEFAULT_CONSTRAINTS, load_constraints
 
 router = APIRouter(prefix="/api/classifications", tags=["classifications"])
 constraints_router = APIRouter(prefix="/api/constraints", tags=["constraints"])
@@ -76,25 +77,14 @@ def apply_classification(db: Session = Depends(get_db)):
 
 
 # ── Constraints ────────────────────────────────────────────────────────
-
-# Defaults used when no persisted config exists yet.
-_DEFAULT_CONSTRAINTS = OptimizationConstraints(
-    single_max_weight=0.15,
-    category_constraints=[],
-)
-
-
-def _load_constraints(db: Session) -> OptimizationConstraints:
-    row = db.query(ConstraintConfig).order_by(ConstraintConfig.id).first()
-    if row is None or not row.config:
-        return _DEFAULT_CONSTRAINTS.model_copy(deep=True)
-    return OptimizationConstraints(**row.config)
+# 默认值与加载逻辑统一在 webapp.services.constraint_service（B7），
+# GET 与 strategy_service.load_core_constraints 共用同一实现。
 
 
 @constraints_router.get("", response_model=OptimizationConstraints)
 def get_constraints(db: Session = Depends(get_db)):
     """Get current optimization constraints configuration."""
-    return _load_constraints(db)
+    return load_constraints(db)
 
 
 @constraints_router.put("", response_model=OptimizationConstraints)

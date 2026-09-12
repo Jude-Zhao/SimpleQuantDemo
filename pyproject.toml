@@ -10,7 +10,6 @@ requires-python = ">=3.10"
 dependencies = [
     "akshare>=1.18.0",
     "baostock>=0.8.8",
-    "bt>=1.1.0",
     "fastapi>=0.100.0",
     "matplotlib>=3.8.0",
     "numpy>=1.26.0",
@@ -20,7 +19,6 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
-    "quantstats>=0.0.81",
     "scipy>=1.10.0",
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.23.0",
