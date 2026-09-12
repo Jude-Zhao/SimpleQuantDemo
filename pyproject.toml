@@ -35,6 +35,18 @@ dev = [
 include = ["core*", "research*", "webapp*"]
 exclude = ["data_example*", "tests*", "docs*"]
 
+[tool.setuptools.package-data]
+# A11/OPT-06: wheel 打包必须携带的包内资源；data/*.db、output、.env 不打包
+"core.factors.builtin" = ["factors.yaml"]
+"research" = ["factor_config.yaml"]
+"webapp" = [
+    "static/*.html",
+    "static/css/*",
+    "static/js/*",
+    "static/js/pages/*",
+    "static/vendor/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
