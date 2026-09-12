@@ -11,12 +11,57 @@ from core.optimization.exceptions import OptimizationError
 _DEFAULT_CATEGORY_KEY = "category"
 
 
+def _merge_count_constraints(
+    constraints: OptimizationConstraints | None,
+) -> dict[str, tuple[int | None, int | None]]:
+    """Merge count constraints per category value, keeping the strictest bound.
+
+    Duplicate constraints for the same category are combined instead of
+    overriding each other: ``max_count`` keeps the minimum and ``min_count``
+    keeps the maximum. Count constraints on category keys other than
+    ``_DEFAULT_CATEGORY_KEY`` are rejected instead of silently ignored.
+
+    Returns:
+        Mapping of category value to ``(min_count, max_count)``; either entry
+        is ``None`` when that bound is unrestricted.
+    """
+    merged: dict[str, list[int | None]] = {}
+    if constraints is None:
+        return {}
+    for cat in constraints.category_constraints:
+        if cat.category_key != _DEFAULT_CATEGORY_KEY:
+            if cat.min_count is not None or cat.max_count is not None:
+                raise OptimizationError(
+                    f"Category count constraints on category_key='{cat.category_key}' "
+                    "are not supported; only category_key="
+                    f"'{_DEFAULT_CATEGORY_KEY}' is supported."
+                )
+            continue
+        if cat.min_count is None and cat.max_count is None:
+            continue
+        if (cat.min_count is not None and cat.min_count < 0) or (
+            cat.max_count is not None and cat.max_count < 0
+        ):
+            raise OptimizationError(
+                f"Category '{cat.category_value}' count constraints must be "
+                f"non-negative: min_count={cat.min_count}, max_count={cat.max_count}."
+            )
+        slot = merged.setdefault(cat.category_value, [None, None])
+        if cat.min_count is not None and (slot[0] is None or cat.min_count > slot[0]):
+            slot[0] = cat.min_count
+        if cat.max_count is not None and (slot[1] is None or cat.max_count < slot[1]):
+            slot[1] = cat.max_count
+    return {value: (bounds[0], bounds[1]) for value, bounds in merged.items()}
+
+
 class EqualWeightOptimizer(PortfolioOptimizer):
     """Select Top N securities by score and assign equal weights.
 
     When ``constraints`` and ``classifications`` are provided, the selection
     honours per-category minimum/maximum counts (``min_count``/``max_count``).
-    Category weight bounds are not enforced at selection time; callers should
+    Contradictory, infeasible, or unsupported count constraints raise
+    ``OptimizationError`` instead of being partially satisfied. Category
+    weight bounds are not enforced at selection time; callers should
     validate the resulting portfolio with ``validate_constraints``.
     """
 
@@ -115,17 +160,14 @@ class EqualWeightOptimizer(PortfolioOptimizer):
         """Greedy selection honouring per-category min/max counts.
 
         Returns the list of selected security codes (best score first).
-        """
-        # Collect count constraints for the default category key.
-        count_constraints = []
-        if constraints is not None:
-            for cat in constraints.category_constraints:
-                if cat.category_key != _DEFAULT_CATEGORY_KEY:
-                    continue
-                if cat.min_count is not None or cat.max_count is not None:
-                    count_constraints.append(cat)
 
-        if not count_constraints:
+        Contradictory, infeasible, or unsupported count constraints — and any
+        violation of the received count limits in the final selection — raise
+        ``OptimizationError`` instead of being silently skipped. The
+        must-include set is never truncated to fit ``top_n``.
+        """
+        merged = _merge_count_constraints(constraints)
+        if not merged:
             return ranked.head(top_n)["sec"].tolist()
 
         def category_of(sec: str) -> str | None:
@@ -136,23 +178,58 @@ class EqualWeightOptimizer(PortfolioOptimizer):
         for sec in ranked["sec"]:
             categories.setdefault(category_of(sec), []).append(sec)
 
+        # Pre-check: contradictory bounds within one category.
+        for value, (min_count, max_count) in merged.items():
+            if min_count is not None and max_count is not None and min_count > max_count:
+                raise OptimizationError(
+                    f"Category '{value}' count constraints are infeasible: "
+                    f"min_count={min_count} > max_count={max_count}; the "
+                    "must-include securities would violate max_count."
+                )
+
         # Securities that must be included to satisfy minimum counts.
         must_include: set[str] = set()
-        for cat in count_constraints:
-            if cat.min_count is None:
+        total_min_count = 0
+        for value, (min_count, _max_count) in merged.items():
+            if min_count is None:
                 continue
-            members = categories.get(cat.category_value, [])
-            if len(members) < cat.min_count:
+            members = categories.get(value, [])
+            if len(members) < min_count:
                 raise OptimizationError(
-                    f"Category '{cat.category_value}' has only {len(members)} eligible "
-                    f"securities, but min_count={cat.min_count} is required."
+                    f"Category '{value}' has only {len(members)} eligible "
+                    f"securities, but min_count={min_count} is required."
                 )
-            must_include.update(members[: cat.min_count])
+            must_include.update(members[:min_count])
+            total_min_count += min_count
+
+        # Pre-check: the required minimum counts must fit into the portfolio.
+        if total_min_count > top_n:
+            raise OptimizationError(
+                "Category min_count constraints require at least "
+                f"{total_min_count} securities in total, which exceeds "
+                f"top_n={top_n}."
+            )
+        if len(must_include) > top_n:
+            raise OptimizationError(
+                f"Must-include securities ({len(must_include)}) exceed "
+                f"top_n={top_n}."
+            )
+
+        # Pre-check: must-include securities must respect their category max.
+        for value, (_min_count, max_count) in merged.items():
+            if max_count is None:
+                continue
+            must_in_category = sum(1 for sec in must_include if category_of(sec) == value)
+            if must_in_category > max_count:
+                raise OptimizationError(
+                    f"Must-include securities for category '{value}' "
+                    f"({must_in_category}) would violate max_count={max_count}."
+                )
 
         max_counts = {
-            cat.category_value: cat.max_count
-            for cat in count_constraints
-            if cat.max_count is not None
+            value: max_count
+            for value, (_min_count, max_count) in merged.items()
+            if max_count is not None
         }
         selected: list[str] = []
         counts: dict[str, int] = {}
@@ -163,14 +240,26 @@ class EqualWeightOptimizer(PortfolioOptimizer):
                 return False
             return True
 
-        # 1. Take all must-include securities (in best-score order).
+        def _add(sec: str) -> None:
+            selected.append(sec)
+            cat = category_of(sec)
+            counts[cat or ""] = counts.get(cat or "", 0) + 1
+
+        # 1. Take all must-include securities (in best-score order). The set
+        # is never truncated; if it cannot fit, that is an error, not a skip.
         for sec in ranked["sec"]:
+            if sec not in must_include or sec in selected:
+                continue
             if len(selected) >= top_n:
-                break
-            if sec in must_include and _can_add(sec):
-                selected.append(sec)
-                cat = category_of(sec)
-                counts[cat or ""] = counts.get(cat or "", 0) + 1
+                raise OptimizationError(
+                    f"Must-include securities cannot fit into top_n={top_n}."
+                )
+            if not _can_add(sec):
+                raise OptimizationError(
+                    f"Must-include security '{sec}' would violate its category "
+                    "max_count."
+                )
+            _add(sec)
 
         # 2. Fill the rest with the next best securities.
         for sec in ranked["sec"]:
@@ -180,15 +269,28 @@ class EqualWeightOptimizer(PortfolioOptimizer):
                 continue
             if not _can_add(sec):
                 continue
-            selected.append(sec)
-            cat = category_of(sec)
-            counts[cat or ""] = counts.get(cat or "", 0) + 1
+            _add(sec)
 
         if len(selected) < top_n:
             raise OptimizationError(
                 "Category count constraints prevent selecting "
                 f"top_n={top_n} securities (only {len(selected)} available)."
             )
+
+        # Post-check: re-verify every received (merged) count constraint
+        # against the final selection.
+        for value, (min_count, max_count) in merged.items():
+            count = sum(1 for sec in selected if category_of(sec) == value)
+            if min_count is not None and count < min_count:
+                raise OptimizationError(
+                    "Selected portfolio violates min_count for category "
+                    f"'{value}': count={count} < min_count={min_count}."
+                )
+            if max_count is not None and count > max_count:
+                raise OptimizationError(
+                    "Selected portfolio violates max_count for category "
+                    f"'{value}': count={count} > max_count={max_count}."
+                )
         return selected
 
 
