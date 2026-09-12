@@ -38,3 +38,8 @@ exclude = ["data_example*", "tests*", "docs*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.12.0",
+]
