@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fastapi.testclient import TestClient
 
+from pydantic import ValidationError
+
 from webapp.main import app
+from webapp.schemas.classification import CategoryConstraint, OptimizationConstraints
+
+pytestmark = pytest.mark.usefixtures("webapp_clean_state")
 
 client = TestClient(app)
 
@@ -172,3 +179,146 @@ def test_update_constraints():
     response = client.get("/api/constraints")
     assert response.status_code == 200
     assert response.json()["single_max_weight"] == 0.2
+
+
+# ── BUG-16：约束保存无损往返（0/空/非法/Infinity/GET→PUT→GET 一致）────────
+
+def test_update_constraints_zero_and_hidden_field_roundtrip():
+    """0 必须保留为 0（前端历史 bug 是 parseFloat(...) || null 把 0 变 null，
+    后端必须能无损保存 0），隐藏字段 turnover_limit=0 完整往返。"""
+    payload = {
+        "single_min_weight": 0,
+        "single_max_weight": 0,
+        "turnover_limit": 0,
+        "category_constraints": [
+            {
+                "category_key": "category",
+                "category_value": "宽基",
+                "min_weight": 0,
+                "max_weight": 0.5,
+                "min_count": 0,
+                "max_count": 2,
+            }
+        ],
+    }
+    response = client.put("/api/constraints", json={"constraints": payload})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["single_min_weight"] == 0
+    assert data["single_max_weight"] == 0
+    assert data["turnover_limit"] == 0
+    assert data["category_constraints"][0]["min_weight"] == 0
+    assert data["category_constraints"][0]["min_count"] == 0
+
+    # GET → 不修改 → PUT → GET 完全一致（前端快照保存的等价行为）
+    first = client.get("/api/constraints")
+    assert first.status_code == 200
+    put_again = client.put("/api/constraints", json={"constraints": first.json()})
+    assert put_again.status_code == 200
+    assert put_again.json() == first.json()
+    assert client.get("/api/constraints").json() == first.json()
+
+
+def test_update_constraints_null_fields_roundtrip():
+    """空串在前端解析为 null；null 约束往返不变形。"""
+    payload = {
+        "single_min_weight": None,
+        "single_max_weight": 0.2,
+        "turnover_limit": None,
+        "category_constraints": [],
+    }
+    response = client.put("/api/constraints", json={"constraints": payload})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["single_min_weight"] is None
+    assert data["turnover_limit"] is None
+    assert client.get("/api/constraints").json()["single_max_weight"] == 0.2
+
+
+def test_update_constraints_rejects_infinity_and_nan():
+    # 说明（二选一：直接测 schema 层校验）：
+    # Infinity/NaN 不是合法 JSON 值（RFC 8259），正常客户端无法经严格 JSON 传输：
+    # - 本项目 TestClient（httpx）序列化请求体时 allow_nan=False，json= 传 inf
+    #   在客户端即抛 ValueError（请求根本不会发出）；
+    # - 若手工构造含 Infinity 字面量的原始请求体（Python json.loads 会接受），
+    #   Pydantic 能正确拒绝，但 FastAPI 生成的 422 错误详情包含原始 input=inf，
+    #   而当前 starlette 版本渲染 JSONResponse 时 allow_nan=False，导致错误响应
+    #   本身无法序列化（500）——修此问题需改 API 层异常处理器，超出本阶段允许
+    #   修改的文件边界。因此本用例直接验证 schema 层的有限值校验（权威防线）。
+    with pytest.raises(ValidationError):
+        OptimizationConstraints(single_max_weight=float("inf"))
+    with pytest.raises(ValidationError):
+        OptimizationConstraints(single_min_weight=float("-inf"))
+    with pytest.raises(ValidationError):
+        OptimizationConstraints(single_min_weight=float("nan"))
+    with pytest.raises(ValidationError):
+        OptimizationConstraints(turnover_limit=float("inf"))
+    with pytest.raises(ValidationError):
+        OptimizationConstraints(
+            category_constraints=[
+                CategoryConstraint(
+                    category_key="category",
+                    category_value="宽基",
+                    max_weight=float("inf"),
+                )
+            ]
+        )
+
+
+def test_update_constraints_rejects_non_integer_count():
+    """数量必须是整数（1.5 → 422）。"""
+    response = client.put(
+        "/api/constraints",
+        json={
+            "constraints": {
+                "category_constraints": [
+                    {
+                        "category_key": "category",
+                        "category_value": "宽基",
+                        "min_count": 1.5,
+                    }
+                ]
+            }
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_update_constraints_category_constraints_must_be_list():
+    """category_constraints 必须是数组（对象 → 422）。"""
+    response = client.put(
+        "/api/constraints",
+        json={
+            "constraints": {
+                "category_constraints": {"category_key": "category", "category_value": "宽基"},
+            }
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_update_constraints_allows_infeasible_config():
+    """约束只是提示模式：不可满足（min>max、min_count>max_count）不得禁止配置。"""
+    response = client.put(
+        "/api/constraints",
+        json={
+            "constraints": {
+                "category_constraints": [
+                    {
+                        "category_key": "category",
+                        "category_value": "宽基",
+                        "min_weight": 0.5,
+                        "max_weight": 0.1,
+                        "min_count": 5,
+                        "max_count": 1,
+                    }
+                ]
+            }
+        },
+    )
+    assert response.status_code == 200
+    item = response.json()["category_constraints"][0]
+    assert item["min_weight"] == 0.5
+    assert item["max_weight"] == 0.1
+    assert item["min_count"] == 5
+    assert item["max_count"] == 1

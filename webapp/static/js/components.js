@@ -46,25 +46,52 @@ const Components = (() => {
 
         document.body.appendChild(overlay);
 
+        // BUG-15：close 幂等；弹窗级 pending 防重入（保存期间 Escape/遮罩
+        // 不关闭，避免丢失表单输入）。
+        let closed = false;
+        let pending = false;
+
+        // modal 局部遍历操作按钮（不新建全局工具）。
+        function setButtonsDisabled(disabled) {
+            overlay.querySelectorAll("button[data-action]").forEach((btn) => {
+                btn.disabled = disabled;
+            });
+        }
+
         function close() {
+            if (closed) return;
+            closed = true;
             overlay.remove();
             document.removeEventListener("keydown", escHandler);
         }
 
         function escHandler(e) {
-            if (e.key === "Escape") close();
+            if (e.key !== "Escape") return;
+            if (pending) return; // pending 时不关闭，避免丢表单
+            close();
         }
         document.addEventListener("keydown", escHandler);
 
         overlay.addEventListener("click", (e) => {
-            if (e.target === overlay) close();
+            if (e.target === overlay && !pending) close();
         });
 
         actions.forEach((a, i) => {
-            overlay.querySelector(`[data-action="${i}"]`).addEventListener("click", () => {
-                const result = a.onClick ? a.onClick(overlay, close) : undefined;
-                // Auto-close unless the handler returns false
-                if (result !== false) close();
+            overlay.querySelector(`[data-action="${i}"]`).addEventListener("click", async () => {
+                if (pending) return; // 防重入：未决 Promise 期间双击只触发一次
+                pending = true;
+                setButtonsDisabled(true);
+                try {
+                    // 支持同步/异步回调：等待结果完成后再决定是否关闭。
+                    const result = a.onClick ? await a.onClick(overlay, close) : undefined;
+                    if (result !== false) close();
+                } catch (error) {
+                    // 回调失败：用现有 toast 呈现错误，保留 overlay（输入不丢）。
+                    toast(`操作失败: ${error && error.message ? error.message : String(error)}`, "error");
+                } finally {
+                    pending = false;
+                    setButtonsDisabled(false);
+                }
             });
         });
 

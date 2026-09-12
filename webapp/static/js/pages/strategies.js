@@ -86,7 +86,7 @@ function renderStrategies(container) {
 
     loadStrategies();
     loadRuns();
-    loadConstraints();
+    loadStrategyConstraints();
 
     document.getElementById("btn-refresh-runs").addEventListener("click", loadRuns);
     document.getElementById("btn-reset-params").addEventListener("click", () => {
@@ -130,12 +130,18 @@ async function loadStrategies() {
     }
 }
 
-async function loadConstraints() {
+// BUG-13：页面独有函数名（原 loadConstraints 与 classification.js 顶层同名，
+// 经 app.js scriptCache 后加载顺序决定覆盖，导致跨页面调用错函数）。
+async function loadStrategyConstraints() {
     try {
         constraintsCache = await API.getConstraints();
         renderConstraintPanel();
     } catch (e) {
-        constraintsCache = null;
+        // 加载失败必须可见，且不得覆盖已加载的旧配置（constraintsCache 保持原值）。
+        const panel = document.getElementById("constraint-panel");
+        if (panel) {
+            panel.innerHTML = `<div class="alert alert-error">约束配置加载失败: ${Utils.escapeHtml(e.message)}</div>`;
+        }
     }
 }
 

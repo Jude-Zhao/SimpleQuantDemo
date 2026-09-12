@@ -80,7 +80,7 @@ function renderClassification(container) {
     `;
 
     loadRules();
-    loadConstraints();
+    loadClassificationConstraints();
     // Auto-load the classification preview so the page isn't empty on entry.
     applyClassification(true);
 
@@ -342,9 +342,67 @@ function renderClassificationPreview(el, result) {
     el.innerHTML = html;
 }
 
-async function loadConstraints() {
+// BUG-13：页面独有函数名（原 loadConstraints 与 strategies.js 顶层同名，
+// 会被对方版本覆盖后读错页面元素并吞错）。同时承载 BUG-16 的快照保存：
+// 成功加载后保存完整深拷贝快照，保存时从快照复制、只覆盖三个可见项，
+// 未加载成功不得保存（防止误存空配置/清掉隐藏字段）。
+let constraintsSnapshot = null; // 最近一次成功加载/保存的完整配置（深拷贝）
+let constraintsReady = false; // 当前页面渲染的输入是否已成功填充
+
+function deepCopyJson(value) {
+    return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * 解析约束数字输入：先检查 input.validity.badInput（浏览器级非法输入，如 "1abc"），
+ * 再用 Number() 严格解析（不接受 parseFloat 的 "1abc" → 1 截断），空串 → null，
+ * 0 保留为 0，非有限值（Infinity 等）报错。解析失败 throw，由调用方提示并不发请求。
+ */
+function parseConstraintNumber(el, label) {
+    if (el && el.validity && el.validity.badInput) {
+        throw new Error(`${label}不是合法数字`);
+    }
+    const text = String(el?.value ?? "").trim();
+    if (text === "") return null;
+    const n = Number(text);
+    if (!Number.isFinite(n)) {
+        throw new Error(`${label}必须是有限数字`);
+    }
+    return n;
+}
+
+/** 校验分类约束数组：必须是数组，权重为有限数字、数量为整数。 */
+function validateCategoryConstraints(cats) {
+    if (!Array.isArray(cats)) {
+        throw new Error("分类约束必须是数组");
+    }
+    cats.forEach((item, idx) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+            throw new Error(`分类约束第 ${idx + 1} 项必须是对象`);
+        }
+        ["min_weight", "max_weight"].forEach((k) => {
+            const v = item[k];
+            if (v === undefined || v === null) return;
+            if (typeof v !== "number" || !Number.isFinite(v)) {
+                throw new Error(`分类约束第 ${idx + 1} 项的 ${k} 必须是有限数字`);
+            }
+        });
+        ["min_count", "max_count"].forEach((k) => {
+            const v = item[k];
+            if (v === undefined || v === null) return;
+            if (typeof v !== "number" || !Number.isInteger(v)) {
+                throw new Error(`分类约束第 ${idx + 1} 项的 ${k} 必须是整数`);
+            }
+        });
+    });
+}
+
+async function loadClassificationConstraints() {
+    // 每次渲染后重新加载；就绪前禁止保存。
+    constraintsReady = false;
     try {
         const c = await API.getConstraints();
+        constraintsSnapshot = deepCopyJson(c);
         document.getElementById("constraint-single-min").value = c.single_min_weight ?? "";
         document.getElementById("constraint-single-max").value = c.single_max_weight ?? "";
         document.getElementById("constraint-categories").value = JSON.stringify(
@@ -352,27 +410,49 @@ async function loadConstraints() {
             null,
             2
         );
+        constraintsReady = true;
     } catch (e) {
-        // ignore
+        // 失败必须可见，且不得覆盖旧快照（constraintsSnapshot 保持原值）。
+        Components.toast(`约束配置加载失败: ${e.message}`, "error");
     }
 }
 
 async function saveConstraints() {
-    const payload = {
-        single_min_weight: parseFloat(document.getElementById("constraint-single-min").value) || null,
-        single_max_weight: parseFloat(document.getElementById("constraint-single-max").value) || null,
-    };
+    if (!constraintsSnapshot || !constraintsReady) {
+        // 配置未成功加载时不得保存（避免把空值/空数组当配置写入）。
+        Components.toast("约束配置尚未加载成功，不能保存", "error");
+        return;
+    }
+    // payload 从快照深拷贝出发，只覆盖三个可见项（保留 turnover_limit 等未展示字段）。
+    const payload = deepCopyJson(constraintsSnapshot);
     try {
-        payload.category_constraints = JSON.parse(
-            document.getElementById("constraint-categories").value || "[]"
+        payload.single_min_weight = parseConstraintNumber(
+            document.getElementById("constraint-single-min"),
+            "单票最小权重"
         );
+        payload.single_max_weight = parseConstraintNumber(
+            document.getElementById("constraint-single-max"),
+            "单票最大权重"
+        );
+        let cats;
+        try {
+            cats = JSON.parse(document.getElementById("constraint-categories").value || "[]");
+        } catch (e) {
+            throw new Error("分类约束 JSON 格式错误");
+        }
+        validateCategoryConstraints(cats);
+        payload.category_constraints = cats;
     } catch (e) {
-        Components.toast("分类约束 JSON 格式错误", "error");
+        // 非法数字/非法结构：提示且不发请求。
+        Components.toast(e.message, "error");
         return;
     }
 
     try {
-        await API.updateConstraints(payload);
+        const saved = await API.updateConstraints(payload);
+        // PUT 返回完整配置 → 更新快照（保留 turnover_limit=0 等字段）。
+        constraintsSnapshot = deepCopyJson(saved);
+        constraintsReady = true;
         document.getElementById("constraint-dirty-bar").style.display = "none";
         Components.toast("约束已保存", "success");
     } catch (e) {

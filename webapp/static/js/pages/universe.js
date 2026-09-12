@@ -132,10 +132,12 @@ function groupedUniverse() {
     return names.map((name) => ({ name, items: groups.get(name) }));
 }
 
+// BUG-14：分类键、显示名与控件 id 必须分开（原第二元素是中文标签却被当
+// DOM id 使用，getElementById("资产类别") 恒为 null，提交的 classification 恒 {}）。
 const DIMENSIONS = [
-    ["asset_type", "资产类别"],
-    ["style", "风格"],
-    ["sector", "行业"],
+    { key: "asset_type", label: "资产类别", selectId: "add-asset-type", customId: "add-asset-type-custom" },
+    { key: "style", label: "风格", selectId: "add-style", customId: "add-style-custom" },
+    { key: "sector", label: "行业", selectId: "add-sector", customId: "add-sector-custom" },
 ];
 
 async function loadDimensionOptions() {
@@ -152,8 +154,8 @@ async function loadDimensionOptions() {
     } catch (e) {
         // leave dropdowns empty; add still works without classification
     }
-    DIMENSIONS.forEach(([key, id]) => {
-        const sel = document.getElementById(id);
+    DIMENSIONS.forEach(({ key, selectId, customId }) => {
+        const sel = document.getElementById(selectId);
         if (!sel) return;
         const values = [...(valuesByKey[key] || [])].sort((a, b) => a.localeCompare(b, "zh-CN"));
         sel.innerHTML =
@@ -161,7 +163,7 @@ async function loadDimensionOptions() {
             values.map((v) => `<option value="${Utils.escapeHtml(v)}">${Utils.escapeHtml(v)}</option>`).join("") +
             `<option value="__custom__">自定义…</option>`;
 
-        const custom = document.getElementById(`${id}-custom`);
+        const custom = document.getElementById(customId);
         const sync = () => {
             if (custom) custom.style.display = sel.value === "__custom__" ? "block" : "none";
         };
@@ -184,7 +186,7 @@ function renderClassificationCards() {
         card.innerHTML = `<div class="text-muted" style="font-size:13px;">标的池为空</div>`;
         return;
     }
-    card.innerHTML = DIMENSIONS.map(([key, label]) => {
+    card.innerHTML = DIMENSIONS.map(({ key, label }) => {
         const groups = new Map();
         let unclassified = 0;
         universeCache.forEach((u) => {
@@ -236,7 +238,7 @@ function renderUniverseTable(items) {
                 <td class="text-muted" style="font-size:12px;">${Utils.formatDate(u.added_at)}</td>
                 <td>
                     <div class="row-actions btn-group">
-                        <button class="btn btn-sm btn-danger" onclick="removeEtf('${Utils.escapeHtml(u.sec_code)}')">移除</button>
+                        <button class="btn btn-sm btn-danger" data-remove-code="${Utils.escapeHtml(u.sec_code)}">移除</button>
                     </div>
                 </td>
             </tr>`;}).join("")}
@@ -276,6 +278,13 @@ function renderUniverseTable(items) {
             }
             renderUniverseTable(universeCache);
         });
+    });
+
+    // BUG-17：移除按钮不再拼接内联 onclick（HTML 实体在 onclick 属性中会先被
+    // 浏览器解码再交给 JS 引擎，单引号可 breakout）。渲染后用 addEventListener
+    // 闭包传递原始 sec_code；每次重渲染都会重建 DOM，绑定不会重复。
+    area.querySelectorAll("button[data-remove-code]").forEach((btn) => {
+        btn.addEventListener("click", () => removeEtf(btn.dataset.removeCode));
     });
 
     // Row selection
@@ -362,9 +371,9 @@ async function addManualEtfs() {
     }
 
     const classification = {};
-    DIMENSIONS.forEach(([key, id]) => {
-        const v = readDimension(id, `${id}-custom`);
-        if (v) classification[key] = v;
+    DIMENSIONS.forEach(({ key, selectId, customId }) => {
+        const v = readDimension(selectId, customId);
+        if (v) classification[key] = v; // 空白自定义已 trim；未指定不生成虚假值
     });
 
     const items = [];
@@ -404,4 +413,3 @@ async function removeEtf(secCode) {
 }
 
 window.renderUniverse = renderUniverse;
-window.removeEtf = removeEtf;

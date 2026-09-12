@@ -55,7 +55,8 @@ const API = {
     },
 
     async removeUniverse(secCode) {
-        return this.request(`/api/universe/${secCode}`, { method: "DELETE" });
+        // BUG-17：路径段必须编码，防止 sec_code 中的特殊字符改变请求语义。
+        return this.request(`/api/universe/${encodeURIComponent(secCode)}`, { method: "DELETE" });
     },
 
     // ── Classification ─────────────────────────────────────
