@@ -17,10 +17,9 @@ from typing import Any, Callable
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from webapp.models.market_data import EtfDailyBar, EtfMinuteBar
+from webapp.models.market_data import EtfDailyBar
 from webapp.services.data_service import (
     _get_primary_source,
-    _get_secondary_source,
     _validated_adj_factor,
     get_etf_list,
 )
@@ -35,7 +34,6 @@ class SyncStatus(str, Enum):
 
 class SyncType(str, Enum):
     ETF_DAILY = "etf_daily"
-    ETF_MINUTE = "etf_minute"
     MACRO_DAILY = "macro_daily"
     MACRO_MONTHLY = "macro_monthly"
 
@@ -157,16 +155,14 @@ def start_etf_sync(
     sec_codes: list[str] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
-    period: str = "daily",
 ) -> SyncTask:
-    """Start an ETF data sync in a background thread.
+    """Start an ETF daily data sync in a background thread.
 
     Args:
         db: database session (a new session will be opened for the background thread)
         sec_codes: list of ETF codes, or None for all available ETFs
         start_date: start date (default 2021-01-04)
         end_date: end date (default today)
-        period: "daily" or minute period
 
     Returns:
         SyncTask with pending status
@@ -180,7 +176,7 @@ def start_etf_sync(
     # A10: 证券先去重
     sec_codes = list(dict.fromkeys(sec_codes))
 
-    task_type = SyncType.ETF_DAILY if period in ("daily", "d") else SyncType.ETF_MINUTE
+    task_type = SyncType.ETF_DAILY
 
     default_start = get_config().sync.default_start_date
     effective_start = start_date or default_start
@@ -189,7 +185,7 @@ def start_etf_sync(
     start_ts = pd.Timestamp(effective_start)
     end_ts = pd.Timestamp(effective_end)
     resources = [
-        {"key": sec, "period": period, "start": start_ts, "end": end_ts}
+        {"key": sec, "period": "daily", "start": start_ts, "end": end_ts}
         for sec in sec_codes
     ]
     max_tasks = get_config().sync.max_concurrent_tasks
@@ -204,7 +200,7 @@ def start_etf_sync(
 
         thread = threading.Thread(
             target=_run_etf_sync,
-            args=(task.task_id, list(sec_codes), effective_start, effective_end, period),
+            args=(task.task_id, list(sec_codes), effective_start, effective_end),
             daemon=True,
         )
         thread.start()
@@ -220,9 +216,8 @@ def _run_etf_sync(
     sec_codes: list[str],
     start_date: str,
     end_date: str,
-    period: str,
 ) -> None:
-    """Background worker for ETF sync."""
+    """Background worker for ETF daily sync."""
     from webapp.models.database import SessionLocal
 
     # 外层 try/finally 保证 SessionLocal()/get_task 本身失败时也释放活动
@@ -242,7 +237,6 @@ def _run_etf_sync(
         _jump_threshold = get_config().datasource.jump_threshold
 
         primary = _get_primary_source()
-        secondary = _get_secondary_source()
 
         success_count = 0
         failed_codes: list[str] = []
@@ -282,13 +276,14 @@ def _run_etf_sync(
                     task.message = f"正在同步 {sec_code} ({i}/{len(sec_codes)})"
 
                 # 1. 先获取：失败/为空不进入删除步骤，原数据保留
-                df, source_name = _fetch_etf_safe(
-                    primary, secondary, [sec_code], start_date, end_date, period
+                df, fetch_error = _fetch_etf_from(
+                    primary, [sec_code], start_date, end_date
                 )
 
                 if df.empty:
-                    failed_codes.append(f"{sec_code}: 源返回为空，保留原数据")
-                    _record(sec_code, "failed", source_name, "源返回为空，保留原数据")
+                    reason = f"主源获取失败({fetch_error})，保留原数据"
+                    failed_codes.append(f"{sec_code}: {reason}")
+                    _record(sec_code, "failed", "primary", reason)
                     with _tasks_lock:
                         task.current = i
                     continue
@@ -304,7 +299,7 @@ def _run_etf_sync(
                     _record(
                         sec_code,
                         "rejected",
-                        source_name,
+                        "primary",
                         f"跳变校验剔除 {len(jump_warnings)} 行，保留原数据未替换",
                     )
                     with _tasks_lock:
@@ -324,16 +319,16 @@ def _run_etf_sync(
 
                 # 3. 单事务替换：删除与写入同一事务一次 commit，任何异常整体回滚
                 rows_written = _replace_etf_range(
-                    db, df, sec_code, start_date, end_date, period
+                    db, df, sec_code, start_date, end_date
                 )
                 total_rows += rows_written
                 success_count += 1
-                _record(sec_code, "success", source_name, df_written=df, rows=rows_written)
+                _record(sec_code, "success", "primary", df_written=df, rows=rows_written)
 
             except Exception as e:
                 db.rollback()
                 failed_codes.append(f"{sec_code}: {e}")
-                _record(sec_code, "failed", "", reason=str(e))
+                _record(sec_code, "failed", "primary", reason=str(e))
 
             with _tasks_lock:
                 task.current = i
@@ -377,24 +372,13 @@ def _delete_etf_range_rows(
     sec_code: str,
     start: pd.Timestamp,
     end: pd.Timestamp,
-    period: str,
 ) -> int:
-    """Delete ETF bars in a date range WITHOUT committing (transaction-scoped)."""
-    if period in ("daily", "d"):
-        deleted = db.query(EtfDailyBar).filter(
-            EtfDailyBar.sec_code == sec_code,
-            EtfDailyBar.trade_date >= start.date(),
-            EtfDailyBar.trade_date <= end.date(),
-        ).delete(synchronize_session=False)
-    else:
-        # BUG-06: 半开区间【开始日零点, 结束日下一日零点)，结束日盘中 bar
-        # 属于替换范围
-        deleted = db.query(EtfMinuteBar).filter(
-            EtfMinuteBar.sec_code == sec_code,
-            EtfMinuteBar.period == period,
-            EtfMinuteBar.trade_datetime >= start.normalize(),
-            EtfMinuteBar.trade_datetime < end.normalize() + pd.Timedelta(days=1),
-        ).delete(synchronize_session=False)
+    """Delete ETF daily bars in a date range WITHOUT committing (transaction-scoped)."""
+    deleted = db.query(EtfDailyBar).filter(
+        EtfDailyBar.sec_code == sec_code,
+        EtfDailyBar.trade_date >= start.date(),
+        EtfDailyBar.trade_date <= end.date(),
+    ).delete(synchronize_session=False)
     return deleted
 
 
@@ -404,7 +388,6 @@ def _replace_etf_range(
     sec_code: str,
     start_date: str,
     end_date: str,
-    period: str,
 ) -> int:
     """BUG-02: fetch/validate 通过后，在同一事务内删除旧区间并写入，一次 commit。
 
@@ -415,8 +398,8 @@ def _replace_etf_range(
     start = pd.to_datetime(start_date)
     end = pd.to_datetime(end_date)
     try:
-        _delete_etf_range_rows(db, sec_code, start, end, period)
-        written = _write_etf_data(db, df, period, commit=False)
+        _delete_etf_range_rows(db, sec_code, start, end)
+        written = _write_etf_data(db, df, commit=False)
         db.commit()
         return written
     except Exception:
@@ -424,48 +407,26 @@ def _replace_etf_range(
         raise
 
 
-def _fetch_etf_safe(
-    primary, secondary, sec_codes, start_date, end_date, period
+def _fetch_etf_from(
+    primary, sec_codes, start_date, end_date
 ) -> tuple[pd.DataFrame, str]:
-    """Fetch ETF data from primary source, falling back to secondary.
+    """Fetch ETF daily data from the primary source (single source, no fallback).
 
-    Returns ``(df, source_name)``；source_name 为 "primary"/"secondary"/""。
+    Returns ``(df, error)``：df 为空时 error 给出具体失败原因（异常信息或
+    "源返回为空"），供任务结果逐标的展示；成功时 error 为空字符串。
     """
     try:
-        if hasattr(primary, "get_etf_price_by_codes"):
-            df = primary.get_etf_price_by_codes(
-                sec_codes=sec_codes,
-                start_date=start_date,
-                end_date=end_date,
-                period=period,
-            )
-        else:
-            df = primary.get_etf_price(start_date=start_date, end_date=end_date)
-            if not df.empty:
-                df = df[df["sec"].isin(sec_codes)]
-        if not df.empty:
-            return df, "primary"
-    except Exception:
-        pass
-
-    if secondary is not None:
-        try:
-            if hasattr(secondary, "get_etf_price_by_codes"):
-                df = secondary.get_etf_price_by_codes(
-                    sec_codes=sec_codes,
-                    start_date=start_date,
-                    end_date=end_date,
-                    period=period,
-                )
-            else:
-                df = secondary.get_etf_price(start_date=start_date, end_date=end_date)
-                if not df.empty:
-                    df = df[df["sec"].isin(sec_codes)]
-            return df, "secondary"
-        except Exception:
-            pass
-
-    return pd.DataFrame(), ""
+        df = primary.get_etf_price_by_codes(
+            sec_codes=sec_codes,
+            start_date=start_date,
+            end_date=end_date,
+            period="daily",
+        )
+    except Exception as e:
+        return pd.DataFrame(), f"{type(e).__name__}: {e}"
+    if df.empty:
+        return df, "源返回为空"
+    return df, ""
 
 
 def _filter_jump_anomalies(
@@ -474,12 +435,12 @@ def _filter_jump_anomalies(
 ) -> tuple[pd.DataFrame, list[dict]]:
     """Drop rows whose daily close change exceeds ``threshold`` percent.
 
-    Only applies to unadjusted fallback data. Tencent hfq rows carry an
-    ``adj_factor`` column and are already properly adjusted, so a >15% move
-    there is a real market event (e.g. the 2024-09 A-share rally) and must be
-    kept. Rows without ``adj_factor`` (Sina unadjusted / Baostock fallback)
-    can hide a share split cliff (~-50%), so they are dropped with a warning
-    to prevent bad rows from polluting factor calculations.
+    Only applies to rows without an ``adj_factor`` column (unadjusted data).
+    Tencent hfq rows carry ``adj_factor`` and are already properly adjusted,
+    so a >15% move there is a real market event (e.g. the 2024-09 A-share
+    rally) and must be kept. Unadjusted rows can hide a share split cliff
+    (~-50%), so they are dropped with a warning to prevent bad rows from
+    polluting factor calculations.
     """
     if df.empty:
         return df, []
@@ -503,8 +464,8 @@ def _filter_jump_anomalies(
     return df[keep], warnings
 
 
-def _write_etf_data(db: Session, df: pd.DataFrame, period: str, commit: bool = True) -> int:
-    """Write ETF data to cache. Returns number of rows written.
+def _write_etf_data(db: Session, df: pd.DataFrame, commit: bool = True) -> int:
+    """Write ETF daily data to cache. Returns number of rows written.
 
     ``commit=False`` leaves the transaction open for the caller so delete
     and write can land in a single commit (BUG-02).
@@ -513,50 +474,28 @@ def _write_etf_data(db: Session, df: pd.DataFrame, period: str, commit: bool = T
         return 0
 
     count = 0
-    if period in ("daily", "d"):
-        for _, row in df.iterrows():
-            sec = row["sec"]
-            date_val = pd.to_datetime(row["date"]).date()
-            bar_id = f"{sec}_{date_val.isoformat()}"
+    for _, row in df.iterrows():
+        sec = row["sec"]
+        date_val = pd.to_datetime(row["date"]).date()
+        bar_id = f"{sec}_{date_val.isoformat()}"
 
-            adj_factor = _validated_adj_factor(row.get("adj_factor"))
+        adj_factor = _validated_adj_factor(row.get("adj_factor"))
 
-            bar = EtfDailyBar(
-                id=bar_id,
-                sec_code=sec,
-                trade_date=date_val,
-                open=float(row.get("open", 0)),
-                high=float(row.get("high", 0)),
-                low=float(row.get("low", 0)),
-                close=float(row.get("close", 0)),
-                volume=float(row.get("volume", 0)),
-                amount=float(row.get("amount", 0)),
-                adj_factor=adj_factor,
-                source=row.get("source", "baostock"),
-            )
-            db.add(bar)
-            count += 1
-    else:
-        for _, row in df.iterrows():
-            sec = row["sec"]
-            dt_val = pd.to_datetime(row["date"])
-            bar_id = f"{sec}_{dt_val.strftime('%Y%m%d%H%M')}_{period}"
-
-            bar = EtfMinuteBar(
-                id=bar_id,
-                sec_code=sec,
-                trade_datetime=dt_val,
-                period=period,
-                open=float(row.get("open", 0)),
-                high=float(row.get("high", 0)),
-                low=float(row.get("low", 0)),
-                close=float(row.get("close", 0)),
-                volume=float(row.get("volume", 0)),
-                amount=float(row.get("amount", 0)),
-                source=row.get("source", "baostock"),
-            )
-            db.add(bar)
-            count += 1
+        bar = EtfDailyBar(
+            id=bar_id,
+            sec_code=sec,
+            trade_date=date_val,
+            open=float(row.get("open", 0)),
+            high=float(row.get("high", 0)),
+            low=float(row.get("low", 0)),
+            close=float(row.get("close", 0)),
+            volume=float(row.get("volume", 0)),
+            amount=float(row.get("amount", 0)),
+            adj_factor=adj_factor,
+            source=row.get("source", "akshare"),
+        )
+        db.add(bar)
+        count += 1
 
     if commit:
         db.commit()

@@ -42,7 +42,8 @@ def test_list_fields_monthly():
     fields = list_fields("monthly")
     assert len(fields) == len(MONTHLY_FIELDS)
     names = {f["name"] for f in fields}
-    assert {"m2_yoy", "m1_yoy", "cpi_yoy"}.issubset(names)
+    assert {"cpi_yoy", "ppi_yoy", "aggregate_financing"}.issubset(names)
+    assert not {"m1_yoy", "m2_yoy"} & names  # 货币供应字段已随 baostock 移除
 
 
 def test_list_fields_all():
@@ -84,14 +85,14 @@ def test_get_daily_macro_returns_data(db):
 def test_get_monthly_macro_returns_data(db):
     from webapp.models.macro import MacroMonthly
 
-    db.add(MacroMonthly(trade_month="2024-01", m2_yoy=8.7, m1_yoy=5.9, cpi_yoy=-0.8))
-    db.add(MacroMonthly(trade_month="2024-02", m2_yoy=8.7, m1_yoy=1.2, cpi_yoy=0.7))
+    db.add(MacroMonthly(trade_month="2024-01", cpi_yoy=-0.8, ppi_yoy=-2.5))
+    db.add(MacroMonthly(trade_month="2024-02", cpi_yoy=0.7, ppi_yoy=-2.3))
     db.commit()
 
     df = get_monthly_macro(db)
     assert len(df) == 2
-    assert "m2_yoy" in df.columns
-    assert df.loc["2024-01", "m2_yoy"] == pytest.approx(8.7)
+    assert "cpi_yoy" in df.columns
+    assert df.loc["2024-01", "cpi_yoy"] == pytest.approx(-0.8)
 
     df2 = get_monthly_macro(db, start_month="2024-02")
     assert len(df2) == 1
@@ -249,30 +250,15 @@ class _FakeAk:
 
 def test_sync_monthly_cross_year_boundary_and_clipping(db, monkeypatch):
     """跨年月份边界 2025-12~2026-02 含三个月；区间外不写入；缺字段保留旧值。"""
-    from core.data.baostock_source import BaostockDataSource
-
     from webapp.models.macro import MacroMonthly
     from webapp.services.macro_service import _sync_monthly
 
-    db.add(MacroMonthly(trade_month="2025-11", m1_yoy=4.0, m2_yoy=7.0, cpi_yoy=-9.0))
-    db.add(MacroMonthly(trade_month="2025-12", m1_yoy=5.0, m2_yoy=8.0, cpi_yoy=-1.0))
-    db.add(MacroMonthly(trade_month="2026-02", m2_yoy=8.2, cpi_yoy=-2.0))
+    db.add(MacroMonthly(trade_month="2025-11", cpi_yoy=-9.0, ppi_yoy=-11.0))
+    db.add(MacroMonthly(trade_month="2025-12", cpi_yoy=-1.0, ppi_yoy=-12.0))
+    db.add(MacroMonthly(trade_month="2026-02", ppi_yoy=-13.0))
     db.commit()
 
     months = ["2025-11", "2025-12", "2026-01", "2026-02", "2026-03"]
-    m1_values = [4.0, 5.0, 6.0, float("nan"), 8.0]  # 2026-02 缺 m1
-    m2_values = [7.1, 7.2, 7.3, 7.4, 7.5]
-    money_df = pd.DataFrame(
-        {
-            "m1_yoy": {m: m1_values[i] for i, m in enumerate(months)},
-            "m2_yoy": {m: m2_values[i] for i, m in enumerate(months)},
-        }
-    )
-    monkeypatch.setattr(
-        BaostockDataSource,
-        "get_macro_factors",
-        lambda self, start_date=None, end_date=None, trading_dates=None: money_df,
-    )
     fake_ak = _FakeAk(
         cpi={m: -1.0 + i * 0.1 for i, m in enumerate(months) if m != "2026-02"},
         ppi={m: -2.0 + i * 0.1 for i, m in enumerate(months)},
@@ -286,49 +272,35 @@ def test_sync_monthly_cross_year_boundary_and_clipping(db, monkeypatch):
 
     rows = {r.trade_month: r for r in db.query(MacroMonthly).all()}
     assert "2026-03" not in rows  # 越界不写入
-    assert rows["2025-11"].m2_yoy == pytest.approx(7.0)  # 越界不变
-    assert rows["2025-11"].cpi_yoy == pytest.approx(-9.0)
-    # 2025-12：既有行，非空字段更新，m1/m2/scissors 派生
-    assert rows["2025-12"].m1_yoy == pytest.approx(5.0)
-    assert rows["2025-12"].m2_yoy == pytest.approx(7.2)
-    assert rows["2025-12"].m1_m2_scissors == pytest.approx(5.0 - 7.2)
+    assert rows["2025-11"].cpi_yoy == pytest.approx(-9.0)  # 越界不变
+    assert rows["2025-11"].ppi_yoy == pytest.approx(-11.0)
+    # 2025-12：既有行，非空字段更新
     assert rows["2025-12"].cpi_yoy == pytest.approx(-0.9)
+    assert rows["2025-12"].ppi_yoy == pytest.approx(-1.9)
+    assert rows["2025-12"].aggregate_financing == pytest.approx(10001.0)
     # 2026-01：新插入（跨年区间内第三个月）
-    assert rows["2026-01"].m2_yoy == pytest.approx(7.3)
-    assert rows["2026-01"].m1_yoy == pytest.approx(6.0)
-    # 2026-02：m1 缺失不覆盖（旧值本就为空）；cpi 缺失保留旧值
-    assert rows["2026-02"].m2_yoy == pytest.approx(7.4)
-    assert rows["2026-02"].m1_yoy is None
-    assert rows["2026-02"].cpi_yoy == pytest.approx(-2.0)
+    assert rows["2026-01"].cpi_yoy == pytest.approx(-0.8)
+    assert rows["2026-01"].aggregate_financing == pytest.approx(10002.0)
+    # 2026-02：cpi 缺失保留旧值（本就为空）；ppi/社融正常更新
+    assert rows["2026-02"].cpi_yoy is None
+    assert rows["2026-02"].ppi_yoy == pytest.approx(-1.7)
+    assert rows["2026-02"].aggregate_financing == pytest.approx(10003.0)
     assert task.result["total_months"] == 3
 
 
 def test_sync_monthly_write_failure_rolls_back(db, monkeypatch):
     """月频写入失败回滚：旧行不变。"""
-    from core.data.baostock_source import BaostockDataSource
-
     from webapp.models.macro import MacroMonthly
     from webapp.services.macro_service import _sync_monthly
 
-    db.add(MacroMonthly(trade_month="2025-12", m1_yoy=5.0, m2_yoy=8.0))
+    db.add(MacroMonthly(trade_month="2025-12", cpi_yoy=-1.0))
     db.commit()
 
     months = ["2025-12", "2026-01"]
-    money_df = pd.DataFrame(
-        {
-            "m1_yoy": {m: 6.0 + i for i, m in enumerate(months)},
-            "m2_yoy": {m: 9.0 + i for i, m in enumerate(months)},
-        }
-    )
-    monkeypatch.setattr(
-        BaostockDataSource,
-        "get_macro_factors",
-        lambda self, start_date=None, end_date=None, trading_dates=None: money_df,
-    )
     fake_ak = _FakeAk(
-        cpi={m: -1.0 for m in months},
+        cpi={m: -0.5 for m in months},
         ppi={m: -2.0 for m in months},
-        shrzgm={m: 10000.0 for m in months},
+        shrzgm={m: 20000.0 for m in months},
     )
     monkeypatch.setattr("core.data.akshare_source.ensure_akshare_available", lambda: fake_ak)
 
@@ -342,5 +314,5 @@ def test_sync_monthly_write_failure_rolls_back(db, monkeypatch):
     monkeypatch.undo()
     rows = {r.trade_month: r for r in db.query(MacroMonthly).all()}
     assert set(rows) == {"2025-12"}
-    assert rows["2025-12"].m1_yoy == pytest.approx(5.0)
-    assert rows["2025-12"].m2_yoy == pytest.approx(8.0)
+    assert rows["2025-12"].cpi_yoy == pytest.approx(-1.0)
+    assert rows["2025-12"].aggregate_financing is None

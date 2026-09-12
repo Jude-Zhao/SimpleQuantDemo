@@ -44,10 +44,8 @@ def _display_database_url(value: str) -> str:
 
 class DatasourceConfig(BaseModel):
     primary: str
-    secondary: str
     cache_enabled: bool
     cache_days_daily: int
-    cache_days_minute: int
 
 
 class SystemInfo(BaseModel):
@@ -76,10 +74,8 @@ def get_settings():
     return SettingsResponse(
         datasource=DatasourceConfig(
             primary=config.datasource.primary,
-            secondary=config.datasource.secondary,
             cache_enabled=config.datasource.cache_enabled,
             cache_days_daily=config.datasource.cache_days_daily,
-            cache_days_minute=config.datasource.cache_days_minute,
         ),
         system=SystemInfo(
             version="1.0.0",

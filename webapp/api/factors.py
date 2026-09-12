@@ -40,7 +40,7 @@ def compute_factor_endpoint(
 ):
     """Compute a single factor with IC analysis and group returns.
 
-    Uses cached ETF price data (fetched from baostock on cache miss).
+    Uses cached ETF price data (fetched from AkShare/Tencent on cache miss).
     """
     # Get ETF list as the universe
     etfs = get_etf_list(db)

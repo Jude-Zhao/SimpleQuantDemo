@@ -39,10 +39,8 @@ def test_config_has_all_sections():
 def test_datasource_config():
     cfg = get_config()
     assert cfg.datasource.primary == "akshare"
-    assert cfg.datasource.secondary == "baostock"
     assert cfg.datasource.cache_enabled is True
     assert cfg.datasource.cache_days_daily == 365
-    assert cfg.datasource.cache_days_minute == 60
 
 
 def test_factors_config():

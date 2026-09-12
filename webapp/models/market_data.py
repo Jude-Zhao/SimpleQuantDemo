@@ -1,8 +1,8 @@
-"""Market data ORM models (daily bar + minute bar cache tables)."""
+"""Market data ORM model (daily bar cache table)."""
 
 from __future__ import annotations
 
-from sqlalchemy import Column, Date, DateTime, Float, Index, String
+from sqlalchemy import Column, Date, Float, Index, String
 
 from webapp.models.database import Base
 
@@ -22,30 +22,8 @@ class EtfDailyBar(Base):
     volume = Column(Float)
     amount = Column(Float)
     adj_factor = Column(Float)  # 后复权累计因子 close/raw_close，用于还原真实市价
-    source = Column(String)  # akshare / baostock
+    source = Column(String)  # 数据来源，当前为 akshare（腾讯 fqkline hfq）
 
     __table_args__ = (
         Index("ix_daily_bar_sec_date", "sec_code", "trade_date", unique=True),
-    )
-
-
-class EtfMinuteBar(Base):
-    """ETF minute-bar OHLCV cache table."""
-
-    __tablename__ = "etf_minute_bar"
-
-    id = Column(String, primary_key=True)  # sec_code + "_" + datetime + "_" + period
-    sec_code = Column(String, nullable=False, index=True)
-    trade_datetime = Column(DateTime, nullable=False, index=True)
-    period = Column(String, nullable=False, index=True)  # 1m / 5m / 15m / 30m / 60m
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
-    volume = Column(Float)
-    amount = Column(Float)
-    source = Column(String)
-
-    __table_args__ = (
-        Index("ix_minute_bar_sec_dt_period", "sec_code", "trade_datetime", "period", unique=True),
     )

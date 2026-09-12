@@ -112,7 +112,6 @@ def test_overlap_conflict_rejected_then_released(db, monkeypatch):
     blocker_a = _BlockingSource(_rows("A.SH", ["2024-01-02"]))
     router.routes[("A.SH", "2024-01-01", "daily")] = blocker_a
     monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: router)
 
     task1 = ss.start_etf_sync(
         db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31"
@@ -142,7 +141,6 @@ def test_capacity_limit_third_rejected(db, monkeypatch):
         blockers[sec] = _BlockingSource(_rows(sec, ["2024-01-02"]))
         router.routes[(sec, "2024-01-01", "daily")] = blockers[sec]
     monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: router)
 
     t1 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     t2 = ss.start_etf_sync(db=db, sec_codes=["B.SH"], start_date="2024-01-01", end_date="2024-12-31")
@@ -161,8 +159,8 @@ def test_capacity_limit_third_rejected(db, monkeypatch):
     _wait_terminal(t3)
 
 
-def test_disjoint_ranges_and_different_period_allowed(db, monkeypatch):
-    """不重叠区间允许；不同周期资源允许（A daily 与 A 5m 互不冲突）。"""
+def test_disjoint_ranges_allowed(db, monkeypatch):
+    """不重叠区间允许并行同步。"""
     _patch_env(db, monkeypatch)
     router = _RoutingSource()
     blocker_first = _BlockingSource(_rows("A.SH", ["2024-01-02"]))
@@ -170,11 +168,7 @@ def test_disjoint_ranges_and_different_period_allowed(db, monkeypatch):
     router.routes[("A.SH", "2024-07-01", "daily")] = _BlockingSource(
         _rows("A.SH", ["2024-07-01"]), release_immediately=True
     )
-    router.routes[("A.SH", "2024-01-01", "5m")] = _BlockingSource(
-        _rows("A.SH", ["2024-01-02"]), release_immediately=True
-    )
     monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: router)
 
     t1 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-06-30")
     try:
@@ -183,11 +177,6 @@ def test_disjoint_ranges_and_different_period_allowed(db, monkeypatch):
         t2 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-07-01", end_date="2024-12-31")
         t2 = _wait_terminal(t2)
         assert t2.status == ss.SyncStatus.COMPLETED
-        # 不同周期：允许并行
-        t3 = ss.start_etf_sync(
-            db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-06-30", period="5m"
-        )
-        _wait_terminal(t3)
     finally:
         blocker_first.release.set()
     _wait_terminal(t1)
@@ -200,7 +189,6 @@ def test_batch_conflict_rejects_whole_request(db, monkeypatch):
     blocker_a = _BlockingSource(_rows("A.SH", ["2024-01-02"]))
     router.routes[("A.SH", "2024-01-01", "daily")] = blocker_a
     monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: router)
 
     t1 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     try:
@@ -224,7 +212,6 @@ def test_dedup_codes(db, monkeypatch):
         _rows("A.SH", ["2024-01-02"]), release_immediately=True
     )
     monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: router)
 
     task = ss.start_etf_sync(db=db, sec_codes=["A.SH", "A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     assert task.total == 1
@@ -240,7 +227,6 @@ def test_worker_exception_releases_activity(db, monkeypatch):
             raise RuntimeError("source down")
 
     monkeypatch.setattr(ss, "_get_primary_source", lambda: _FailingSource())
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: _FailingSource())
 
     t1 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     t1 = _wait_terminal(t1)
@@ -264,7 +250,6 @@ def test_sessionlocal_failure_releases_activity(db, monkeypatch):
     monkeypatch.setattr(db_mod, "SessionLocal", _failing_session_local)
     monkeypatch.setattr("webapp.config.get_config", lambda: _fake_config(2))
     monkeypatch.setattr(ss, "_get_primary_source", lambda: SimpleNamespace())
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: SimpleNamespace())
 
     t1 = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     t1 = _wait_terminal(t1)
@@ -286,7 +271,6 @@ def test_written_range_is_actual_not_requested(db, monkeypatch):
         _rows("A.SH", ["2024-01-02", "2024-01-03"]), release_immediately=True
     )
     monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: router)
 
     task = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     task = _wait_terminal(task)
@@ -310,7 +294,6 @@ def test_written_empty_on_failure(db, monkeypatch):
             raise RuntimeError("source down")
 
     monkeypatch.setattr(ss, "_get_primary_source", lambda: _FailingSource())
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: _FailingSource())
 
     task = ss.start_etf_sync(db=db, sec_codes=["A.SH"], start_date="2024-01-01", end_date="2024-12-31")
     task = _wait_terminal(task)

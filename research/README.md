@@ -37,7 +37,7 @@ research/
 行情数据**不是** research 自己下载的，而是从共享数据库 `data/simple_quant.db` 读取：
 
 ```
-外部数据源(AkShare 腾讯hqkline后复权 / baostock兜底)
+外部数据源(AkShare 腾讯fqkline后复权，唯一源)
         │  同步(手动触发)
         ▼
 data/simple_quant.db  ── etf_daily_bar 表（后复权价 + adj_factor 复权因子）
@@ -54,7 +54,7 @@ factor 计算 / IC 分析 / 策略回测
 
 1. 启动看板：`python run_webapp.py`，访问 <http://localhost:8000>。
 2. 进入 **设置页** → 点「同步行情」/「同步宏观数据」。
-3. 后台线程拉取并写入 `etf_daily_bar`，带进度条。内部走 `webapp/services/sync_service.py` 的 `start_etf_sync()`（主源 AkShare 腾讯后复权，失败自动回退 baostock）。
+3. 后台线程拉取并写入 `etf_daily_bar`，带进度条。内部走 `webapp/services/sync_service.py` 的 `start_etf_sync()`（唯一源 AkShare 腾讯后复权）。
 
 > 新增标的：先在 Web 「标的池管理」添加 ETF，再同步行情。数据库里 `universe_items.is_active=1` 的代码就是 research 的标的池。
 

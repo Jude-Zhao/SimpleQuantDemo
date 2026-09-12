@@ -28,7 +28,7 @@ _WEBAPP_TMP_DIR = Path(tempfile.mkdtemp(prefix="sq_webapp_test_"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_WEBAPP_TMP_DIR / 'webapp_test.db').as_posix()}"
 
 # 跨测试保留的参考数据表（价格/宏观数据只读）；其余表在每个 webapp 测试前清空重置。
-_WEBAPP_KEEP_TABLES = {"etf_daily_bar", "etf_minute_bar", "macro_daily", "macro_monthly"}
+_WEBAPP_KEEP_TABLES = {"etf_daily_bar", "macro_daily", "macro_monthly"}
 
 ETF_CODES = [
     "510300.SH",
@@ -290,7 +290,6 @@ def webapp_clean_state(webapp_seeded_db, monkeypatch):
     from webapp.services import data_service as _ds
 
     monkeypatch.setattr(_ds, "_get_primary_source", lambda: _OfflineSource())
-    monkeypatch.setattr(_ds, "_get_secondary_source", lambda: _OfflineSource())
     yield
 
 

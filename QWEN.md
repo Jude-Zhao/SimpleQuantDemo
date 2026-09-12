@@ -12,9 +12,9 @@ SimpleQuantDemo 是一个 **Python 量化研究演示项目**，核心是「因�
 - **回测**：共享回测引擎 + `bt` 开源库引擎。
 - **展示**：Web 看板（FastAPI + 静态前端 + ECharts）。
 
-**技术栈**：Python ≥ 3.10 · FastAPI · SQLAlchemy · SQLite · pandas/numpy · `bt`（回测）· `quantstats`（绩效）· AkShare + baostock（数据源）。
+**技术栈**：Python ≥ 3.10 · FastAPI · SQLAlchemy · SQLite · pandas/numpy · `bt`（回测）· `quantstats`（绩效）· AkShare（数据源）。
 
-**数据口径**：行情统一为 **后复权（hfq）**，主源腾讯 fqkline，baostock 兜底，本地 SQLite 缓存。
+**数据口径**：行情统一为 **后复权（hfq）**，唯一源腾讯 fqkline（经 AkShare），本地 SQLite 缓存。
 
 ## 2. 分层架构
 
@@ -27,7 +27,7 @@ SimpleQuantDemo 是一个 **Python 量化研究演示项目**，核心是「因�
 | Web 看板 | `webapp/` | FastAPI API + SQLAlchemy ORM + Pydantic schema + 静态 SPA |
 | 测试 | `tests/` | 全量 pytest |
 
-**数据流**：外部数据源（AkShare/baostock）→ 同步进 `data/simple_quant.db`（`etf_daily_bar` 等表）→ `research` 与 `webapp` 都从这张共享库读取。`research` 只读不写，数据同步统一走 Web 设置页。
+**数据流**：外部数据源（AkShare/腾讯）→ 同步进 `data/simple_quant.db`（`etf_daily_bar` 等表）→ `research` 与 `webapp` 都从这张共享库读取。`research` 只读不写，数据同步统一走 Web 设置页。
 
 ## 3. 目录结构
 
@@ -38,7 +38,7 @@ core/
 ├── synthesis/      # 因子合成（faa_eaa.py 为核心）
 ├── optimization/   # 等权 / 得分加权 / 约束校验
 ├── backtest/       # 共享回测引擎（engine.py）
-├── data/           # 数据源抽象 + AkShare/baostock/SQLite + default_universe.py
+├── data/           # 数据源抽象 + AkShare(腾讯fqkline)/SQLite + default_universe.py
 └── calendar.py     # 交易日历 + 调仓日生成
 research/
 ├── main.py         # 一键研究+回测入口（python -m research.main）
@@ -126,8 +126,9 @@ from core.data import SqliteDataSource
 - **SQLite 单文件**：`data/simple_quant.db`（Web 与 research 共享）。连接串在 `config/webapp.yaml` 的 `database.url`，可用环境变量 `DATABASE_URL` 覆盖（见 `.env.example`）。
 - 主要表：`etf_daily_bar`（含 `adj_factor` 复权因子列）、`macro_daily`（宏观）、`universe_items`（标的池）、`strategy_runs`（策略运行记录）、classification/constraint 相关表。
 - **后复权**：`etf_daily_bar.close` 是后复权价，展示现价需 `close / adj_factor` 还原。
-- 数据源：主源 AkShare（腾讯 fqkline 后复权），兜底 baostock；`config/webapp.yaml` 里配 `primary/secondary/cache`。
-- 同步入口：Web 设置页手动触发，走 `webapp/services/sync_service.py`（后台线程 + 进度条）。
+- 数据源：唯一源 AkShare（腾讯 fqkline 后复权），**无备用源**（baostock 对 ETF 的复权参数静默无效、历史仅约 8 个月，已于 2026-09-12 移除）。`config/webapp.yaml` 配 `primary/cache`。
+- **腾讯源加固**：浏览器 UA + Referer、全局最小请求间隔 0.4s（跨线程节流）、指数退避重试（1/2/4s）、WAF 拦截页识别（`TencentSourceError` fail-fast，失败原因透传到任务结果）。
+- 同步入口：Web 设置页手动触发，走 `webapp/services/sync_service.py`（后台线程 + 进度条 + 逐标的明细/失败原因展示）。
 
 ## 6. 环境搭建与运行
 

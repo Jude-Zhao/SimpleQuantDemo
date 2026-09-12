@@ -102,10 +102,9 @@ def test_cache_hit_skips_fetch():
     assert primary.fetch_count == 0  # No fetch needed
 
 
-def test_secondary_fallback_on_primary_failure():
-    data = _make_sample_data()
+def test_primary_failure_returns_empty_with_incomplete():
+    """主源失败（无备用源）→ 返回空 + incomplete_codes 显式报告。"""
     primary = _FakeDataSource(should_fail=True)
-    secondary = _FakeDataSource(data)
     cache_store = {}
 
     def reader(codes, start, end, period):
@@ -116,7 +115,6 @@ def test_secondary_fallback_on_primary_failure():
 
     cached = CachedDataSource(
         primary_source=primary,
-        secondary_source=secondary,
         cache_reader=reader,
         cache_writer=writer,
     )
@@ -125,9 +123,10 @@ def test_secondary_fallback_on_primary_failure():
         ["510300.SH"], start_date="2024-01-02", end_date="2024-01-08"
     )
 
-    assert not result.empty
+    assert result.empty
     assert primary.fetch_count == 1
-    assert secondary.fetch_count == 1
+    assert cached.incomplete_codes == ["510300.SH"]
+    assert "data" not in cache_store  # 无数据不写缓存
 
 
 def test_empty_codes_returns_empty():
@@ -253,26 +252,20 @@ def test_weekend_not_reported_as_gap():
     assert primary.fetch_count == 0  # 不按自然日数量推断缺口
 
 
-def test_primary_missing_secondary_receives_missing_code():
-    """主源只有 A 时，备用源收到缺失的 B。"""
+def test_primary_missing_code_reported_as_incomplete():
+    """主源只有 A 时，缺失的 B 进 incomplete_codes 且不静默。"""
     dates = pd.date_range("2024-01-02", periods=3, freq="B")
     rows_a = [
         {"date": d, "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 1.0, "volume": 1, "amount": 1}
         for d in dates
     ]
-    rows_b = [
-        {"date": d, "sec": "510500.SH", "open": 2, "high": 2, "low": 2, "close": 2.0, "volume": 1, "amount": 1}
-        for d in dates
-    ]
     primary = _FakeDataSource(pd.DataFrame(rows_a))  # 主源只有 A
-    secondary = _FakeDataSource(pd.DataFrame(rows_b))  # 备用源有 B
 
     def reader(codes, start, end, period):
         return pd.DataFrame()
 
     cached = CachedDataSource(
         primary_source=primary,
-        secondary_source=secondary,
         cache_reader=reader,
     )
 
@@ -281,8 +274,8 @@ def test_primary_missing_secondary_receives_missing_code():
     )
 
     assert primary.fetch_count == 1
-    assert secondary.fetch_count == 1
-    assert set(result["sec"].unique()) == {"510300.SH", "510500.SH"}
+    assert cached.incomplete_codes == ["510500.SH"]
+    assert set(result["sec"].unique()) == {"510300.SH"}
 
 
 def test_merge_no_duplicate_keys():
@@ -353,10 +346,8 @@ def test_source_exception_logged_not_silent(caplog):
     import logging
 
     primary = _FakeDataSource(should_fail=True)
-    secondary = _FakeDataSource(should_fail=True)
     cached = CachedDataSource(
         primary_source=primary,
-        secondary_source=secondary,
         cache_reader=lambda codes, start, end, period: pd.DataFrame(),
     )
 
@@ -365,13 +356,13 @@ def test_source_exception_logged_not_silent(caplog):
             ["510300.SH"], start_date="2024-01-02", end_date="2024-01-08"
         )
     assert result.empty
-    assert primary.fetch_count == 1 and secondary.fetch_count == 1
+    assert primary.fetch_count == 1
     error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert any("数据源获取失败" in r.getMessage() for r in error_records)
 
 
 def test_incomplete_codes_logged_on_fill_failure(caplog):
-    """主备源均缺 → incomplete_codes 正确 + WARNING 显式报告（不静默当作完整命中）。"""
+    """主源缺 B → incomplete_codes 正确 + WARNING 显式报告（不静默当作完整命中）。"""
     import logging
 
     dates = pd.date_range("2024-01-02", periods=3, freq="B")
@@ -380,14 +371,12 @@ def test_incomplete_codes_logged_on_fill_failure(caplog):
         for d in dates
     ]
     primary = _FakeDataSource(pd.DataFrame(rows_a))  # 主源只有 A
-    secondary = _FakeDataSource(None)  # 备用源为空
 
     def reader(codes, start, end, period):
         return pd.DataFrame()
 
     cached = CachedDataSource(
         primary_source=primary,
-        secondary_source=secondary,
         cache_reader=reader,
     )
 
@@ -404,14 +393,12 @@ def test_incomplete_codes_logged_on_fill_failure(caplog):
 def test_incomplete_codes_empty_on_success():
     """全部补齐成功 → incomplete_codes 为空（不残留上次请求状态）。"""
     primary = _FakeDataSource(_make_sample_data())
-    secondary = _FakeDataSource(None)
 
     def reader(codes, start, end, period):
         return pd.DataFrame()
 
     cached = CachedDataSource(
         primary_source=primary,
-        secondary_source=secondary,
         cache_reader=reader,
     )
     result = cached.get_etf_price_by_codes(

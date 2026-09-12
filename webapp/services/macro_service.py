@@ -3,7 +3,7 @@
 Provides:
 - Field metadata for daily and monthly macro factors
 - Database query helpers for the webapp
-- Sync orchestration: fetch from data sources (AkShare / Baostock),
+- Sync orchestration: fetch from data sources (AkShare),
   compute derived fields, then write to SQLite (full overwrite).
 """
 
@@ -56,9 +56,6 @@ DAILY_FIELDS: list[MacroFieldMeta] = [
 ]
 
 MONTHLY_FIELDS: list[MacroFieldMeta] = [
-    MacroFieldMeta("m2_yoy", "M2 同比", "货币", "%", "monthly", "high", "广义货币供应量"),
-    MacroFieldMeta("m1_yoy", "M1 同比", "货币", "%", "monthly", "high", "狭义货币供应量"),
-    MacroFieldMeta("m1_m2_scissors", "M1-M2 剪刀差", "货币", "百分点", "monthly", "high", "派生：m1_yoy - m2_yoy"),
     MacroFieldMeta("cpi_yoy", "CPI 同比", "经济", "%", "monthly", "high", "通胀水平"),
     MacroFieldMeta("ppi_yoy", "PPI 同比", "经济", "%", "monthly", "high", "工业品价格"),
     MacroFieldMeta("aggregate_financing", "社会融资规模增量", "经济", "亿元", "monthly", "high", "信用扩张"),
@@ -338,20 +335,15 @@ def _merge_daily_rows(
 
 
 def _sync_monthly(db: Session, task: MacroSyncTask, start_date: str | None, end_date: str | None) -> None:
-    """Fetch monthly macro data from Baostock + AkShare and merge into SQLite.
+    """Fetch monthly macro data from AkShare and merge into SQLite.
 
     BUG-03: months outside the requested range (inclusive of the end month,
     cross-year boundaries included) are never written; missing fields keep
     old valid values; the merge commits as a single transaction.
     """
-    from core.data.baostock_source import BaostockDataSource
     from core.data.akshare_source import ensure_akshare_available
 
-    # 1. Money supply from Baostock (m1_yoy, m2_yoy)
-    bs_source = BaostockDataSource()
-    money_df = bs_source.get_macro_factors(start_date=start_date, end_date=end_date)
-
-    # 2. CPI / PPI / aggregate financing from AkShare
+    # CPI / PPI / aggregate financing from AkShare
     ak = ensure_akshare_available()
     cpi_df = _fetch_ak_monthly_series(ak, ak.macro_china_cpi_yearly(), "中国CPI年率报告")
     ppi_df = _fetch_ak_monthly_series(ak, ak.macro_china_ppi_yearly(), "中国PPI年率报告")
@@ -360,10 +352,6 @@ def _sync_monthly(db: Session, task: MacroSyncTask, start_date: str | None, end_
     # Combine into one monthly table
     data: dict[str, dict[str, float]] = {}
 
-    for month, val in money_df["m1_yoy"].dropna().items():
-        data.setdefault(month, {})["m1_yoy"] = float(val)
-    for month, val in money_df["m2_yoy"].dropna().items():
-        data.setdefault(month, {})["m2_yoy"] = float(val)
     for month, val in cpi_df.items():
         data.setdefault(month, {})["cpi_yoy"] = float(val)
     for month, val in ppi_df.items():
@@ -432,14 +420,6 @@ def _merge_monthly_rows(
         if record is None:
             record = MacroMonthly(trade_month=month)
             db.add(record)
-        if "m1_yoy" in row and "m2_yoy" in row:
-            record.m1_yoy = row["m1_yoy"]
-            record.m2_yoy = row["m2_yoy"]
-            record.m1_m2_scissors = row["m1_yoy"] - row["m2_yoy"]  # derived
-        elif "m1_yoy" in row:
-            record.m1_yoy = row["m1_yoy"]
-        elif "m2_yoy" in row:
-            record.m2_yoy = row["m2_yoy"]
         if "cpi_yoy" in row:
             record.cpi_yoy = row["cpi_yoy"]
         if "ppi_yoy" in row:

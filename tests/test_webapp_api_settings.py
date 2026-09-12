@@ -35,10 +35,8 @@ def _fake_config(database_url: str) -> WebAppConfig:
         database={"url": database_url},
         datasource={
             "primary": "akshare",
-            "secondary": "baostock",
             "cache_enabled": True,
             "cache_days_daily": 365,
-            "cache_days_minute": 60,
         },
         sync={"default_start_date": "2021-01-04"},
         factors={"auto_discover": True, "scan_package": "core.factors"},
@@ -53,10 +51,8 @@ def test_get_settings():
     assert "datasource" in data
     assert "system" in data
     assert "primary" in data["datasource"]
-    assert "secondary" in data["datasource"]
     assert "cache_enabled" in data["datasource"]
     assert "cache_days_daily" in data["datasource"]
-    assert "cache_days_minute" in data["datasource"]
     assert "version" in data["system"]
     assert "database_connected" in data["system"]
 

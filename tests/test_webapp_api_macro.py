@@ -29,7 +29,8 @@ def test_macro_fields_monthly():
     assert resp.status_code == 200
     data = resp.json()
     names = {f["name"] for f in data}
-    assert {"m1_yoy", "m2_yoy", "cpi_yoy"}.issubset(names)
+    assert {"cpi_yoy", "ppi_yoy", "aggregate_financing"}.issubset(names)
+    assert not {"m1_yoy", "m2_yoy"} & names  # 货币供应字段已随 baostock 移除
 
 
 def test_macro_daily_empty_query():

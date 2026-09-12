@@ -1,6 +1,6 @@
 """Data service layer.
 
-Wraps core data sources with SQLite caching for the webapp.
+Wraps the core data source with SQLite caching for the webapp.
 Provides convenience functions used by other webapp services.
 """
 
@@ -12,11 +12,9 @@ import math
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from core.data.akshare_source import AkShareDataUnavailable
-from core.data.baostock_source import BaostockDataSource
 from core.data.cached_source import CachedDataSource
 from webapp.config import get_config
-from webapp.models.market_data import EtfDailyBar, EtfMinuteBar
+from webapp.models.market_data import EtfDailyBar
 
 logger = logging.getLogger(__name__)
 
@@ -42,31 +40,20 @@ def _validated_adj_factor(value) -> float | None:
 def _get_primary_source():
     """Get primary data source instance.
 
-    Uses AkShare as primary for ETF data (Tencent 后复权 hfq, stable long
-    history). Falls back to Baostock if AkShare is unavailable.
+    Uses AkShare (Tencent 后复权 hfq, stable long history) as the sole ETF
+    data source. Raises when AkShare is unavailable — no silent fallback.
     """
-    try:
-        from core.data.akshare_source import AkShareDataSource, ensure_akshare_available
-        ensure_akshare_available()
-        return AkShareDataSource()
-    except Exception:
-        pass
-    return BaostockDataSource()
+    from core.data.akshare_source import AkShareDataSource, ensure_akshare_available
 
-
-def _get_secondary_source():
-    """Get secondary (fallback) data source."""
-    return BaostockDataSource()
+    ensure_akshare_available()
+    return AkShareDataSource()
 
 
 def _cache_reader(db: Session):
     """Create a cache reader function bound to a DB session."""
 
     def reader(sec_codes: list[str], start_date, end_date, period: str = "daily") -> pd.DataFrame:
-        if period == "daily" or period == "d":
-            return _read_daily_cache(db, sec_codes, start_date, end_date)
-        else:
-            return _read_minute_cache(db, sec_codes, start_date, end_date, period)
+        return _read_daily_cache(db, sec_codes, start_date, end_date)
 
     return reader
 
@@ -102,50 +89,13 @@ def _read_daily_cache(db: Session, sec_codes, start_date, end_date) -> pd.DataFr
     return pd.DataFrame(data)
 
 
-def _read_minute_cache(db: Session, sec_codes, start_date, end_date, period: str) -> pd.DataFrame:
-    start = pd.to_datetime(start_date) if start_date else None
-    end = pd.to_datetime(end_date) if end_date else None
-
-    query = db.query(EtfMinuteBar).filter(
-        EtfMinuteBar.sec_code.in_(sec_codes),
-        EtfMinuteBar.period == period,
-    )
-    if start:
-        query = query.filter(EtfMinuteBar.trade_datetime >= start.normalize())
-    if end:
-        # BUG-06: 半开区间【开始日零点, 结束日下一日零点)，结束日盘中数据可查
-        query = query.filter(EtfMinuteBar.trade_datetime < end.normalize() + pd.Timedelta(days=1))
-
-    rows = query.all()
-    if not rows:
-        return pd.DataFrame()
-
-    data = [
-        {
-            "date": pd.Timestamp(r.trade_datetime),
-            "sec": r.sec_code,
-            "open": r.open,
-            "high": r.high,
-            "low": r.low,
-            "close": r.close,
-            "volume": r.volume,
-            "amount": r.amount,
-        }
-        for r in rows
-    ]
-    return pd.DataFrame(data)
-
-
 def _cache_writer(db: Session):
     """Create a cache writer function bound to a DB session."""
 
     def writer(df: pd.DataFrame, period: str = "daily") -> None:
         if df.empty:
             return
-        if period == "daily" or period == "d":
-            _write_daily_cache(db, df)
-        else:
-            _write_minute_cache(db, df, period)
+        _write_daily_cache(db, df)
 
     return writer
 
@@ -177,44 +127,15 @@ def _write_daily_cache(db: Session, df: pd.DataFrame) -> None:
     db.commit()
 
 
-def _write_minute_cache(db: Session, df: pd.DataFrame, period: str) -> None:
-    for _, row in df.iterrows():
-        sec = row["sec"]
-        dt_val = pd.to_datetime(row["date"])
-        bar_id = f"{sec}_{dt_val.strftime('%Y%m%d%H%M')}_{period}"
-
-        existing = db.query(EtfMinuteBar).filter_by(id=bar_id).first()
-        if existing:
-            continue
-
-        bar = EtfMinuteBar(
-            id=bar_id,
-            sec_code=sec,
-            trade_datetime=dt_val,
-            period=period,
-            open=float(row.get("open", 0)),
-            high=float(row.get("high", 0)),
-            low=float(row.get("low", 0)),
-            close=float(row.get("close", 0)),
-            volume=float(row.get("volume", 0)),
-            amount=float(row.get("amount", 0)),
-            source=row.get("source", ""),
-        )
-        db.add(bar)
-    db.commit()
-
-
 def get_cached_source(db: Session) -> CachedDataSource:
     """Get a CachedDataSource instance backed by SQLite."""
     primary = _get_primary_source()
-    secondary = _get_secondary_source()
 
     if not _config.datasource.cache_enabled:
-        return CachedDataSource(primary_source=primary, secondary_source=secondary)
+        return CachedDataSource(primary_source=primary)
 
     return CachedDataSource(
         primary_source=primary,
-        secondary_source=secondary,
         cache_reader=_cache_reader(db),
         cache_writer=_cache_writer(db),
     )

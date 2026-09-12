@@ -7,10 +7,8 @@ database:
 
 datasource:
   primary: "akshare"
-  secondary: "baostock"
   cache_enabled: true
   cache_days_daily: 365
-  cache_days_minute: 60
 
 sync:
   default_start_date: "2021-01-04"

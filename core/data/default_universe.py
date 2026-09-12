@@ -1,16 +1,15 @@
 """Single source of truth for the *static* default universe.
 
-Three places used to each hard-code their own list and drifted apart:
+Multiple places used to each hard-code their own list and drifted apart:
 
 - ``webapp.services.universe_service.DEFAULT_UNIVERSE`` (seed pool, only used
   when ``universe_items`` is empty to initialize a fresh DB)
 - ``core.data.akshare_source.AkShareDataSource.get_universe()``
-- ``core.data.baostock_source.BaostockDataSource.get_universe()``
 
-All three now reference this one module so there is a single default list
-instead of two/three. This is still a *fallback/seed* source only: the live
-"current universe" always comes from ``universe_items`` (is_active=1). Keep
-this list in sync with the active pool whenever the watchlist changes.
+All now reference this one module so there is a single default list.
+This is still a *fallback/seed* source only: the live "current universe"
+always comes from ``universe_items`` (is_active=1). Keep this list in sync
+with the active pool whenever the watchlist changes.
 
 Current pool snapshot: the 30 active ETFs as of 2026-08-19 (adding 588000,
 dropping the removed 159915).

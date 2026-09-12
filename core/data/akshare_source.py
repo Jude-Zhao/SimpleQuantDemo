@@ -8,6 +8,7 @@ and version.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Sequence
 
@@ -24,6 +25,42 @@ from core.data.default_universe import DEFAULT_ACTIVE_CODES
 
 class AkShareDataUnavailable(RuntimeError):
     """Raised when AkShare is not installed or a field adapter is not ready."""
+
+
+class TencentSourceError(RuntimeError):
+    """腾讯行情接口不可用（网络失败 / WAF 拦截 / 非法响应），向上透传失败原因。"""
+
+
+# 模拟浏览器请求头：requests 默认 UA 是典型爬虫特征，容易被 WAF 识别。
+_TENCENT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://gu.qq.com/",
+}
+
+# 重试退避序列（秒）：WAF 拦截多为频率风控，固定短间隔快速重试只会加剧拦截。
+_TENCENT_RETRY_DELAYS = (1.0, 2.0, 4.0)
+
+# 全局最小请求间隔（秒）：跨实例、跨线程生效。50 只 ETF 全量同步约 600 个
+# 请求，0.4s 间隔约 4 分钟跑完，可将请求频率压在 WAF 风控阈值之下。
+_TENCENT_MIN_INTERVAL = 0.4
+
+_throttle_lock = threading.Lock()
+_next_request_at = 0.0
+
+
+def _throttle() -> None:
+    """串行化腾讯请求并保持全局最小间隔（持锁 sleep，多任务共享一个节拍）。"""
+    global _next_request_at
+    with _throttle_lock:
+        now = time.monotonic()
+        wait = _next_request_at - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _next_request_at = max(now, _next_request_at) + _TENCENT_MIN_INTERVAL
 
 
 def ensure_akshare_available():
@@ -92,7 +129,12 @@ class AkShareDataSource(DataSource):
             # BUG-05: 后复权(hfq)是唯一允许入库的口径。hfq 取不到时不再
             # 回退未复权数据（未复权不得作为后复权成功入库），由上层
             # 保留旧数据并报告失败。
-            df = self._fetch_hfq_price(ak, sec_code, start_date, end_date)
+            try:
+                df = self._fetch_hfq_price(ak, sec_code, start_date, end_date)
+            except TencentSourceError:
+                # WAF 拦截/网络故障是 IP 级问题，继续请求剩余标的只会加剧
+                # 风控——快速失败并把原因透传给上层展示。
+                raise
             if not df.empty:
                 all_frames.append(df)
 
@@ -123,12 +165,12 @@ class AkShareDataSource(DataSource):
     ) -> pd.DataFrame:
         """Fetch 后复权(hfq) OHLCV from the Tencent fqkline endpoint.
 
-        Tencent is used because it is the reachable source that correctly
-        adjusts for ETF share splits in this deployment's network (Eastmoney
-        is blocked and Baostock's adjust flag leaves split cliffs). The
-        endpoint caps each request at 640 rows, so history is fetched in
-        per-year segments. ``adj_factor = hfq_close / raw_close`` lets a true
-        market price be recovered via close / adj_factor.
+        Tencent is the only reachable source that correctly adjusts for ETF
+        share splits in this deployment's network (Eastmoney is blocked;
+        baostock's adjust flag is silently ignored for ETFs and would leave
+        split cliffs). The endpoint caps each request at 640 rows, so history
+        is fetched in per-year segments. ``adj_factor = hfq_close / raw_close``
+        lets a true market price be recovered via close / adj_factor.
         """
         hs_code = self._to_sina_code(sec_code)
         start = pd.Timestamp(start_date).strftime("%Y-%m-%d") if start_date else "1990-01-01"
@@ -193,24 +235,46 @@ class AkShareDataSource(DataSource):
         return out
 
     @staticmethod
-    def _tencent_get(hs_code: str, start: str, end: str, fq: str, retries: int) -> list[list]:
+    def _tencent_get(hs_code: str, start: str, end: str, fq: str, retries: int = 3) -> list[list]:
+        """Fetch one kline segment with browser headers, throttling, and
+        exponential backoff.
+
+        网络异常 / WAF 拦截页 / 非法 JSON 视为可重试错误；重试耗尽抛
+        ``TencentSourceError``（携带最后一次失败原因，供同步任务展示）。
+        接口正常应答（含空数据）不重试，直接返回。
+        """
         url = (
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
             f"?param={hs_code},day,{start},{end},640,{fq}"
         )
-        for _ in range(retries):
+        last_error: str | None = None
+        for attempt in range(retries):
+            if attempt:
+                delay = _TENCENT_RETRY_DELAYS[min(attempt - 1, len(_TENCENT_RETRY_DELAYS) - 1)]
+                time.sleep(delay)
+            _throttle()
             try:
-                resp = requests.get(url, timeout=20)
+                resp = requests.get(url, headers=_TENCENT_HEADERS, timeout=20)
+            except Exception as exc:
+                last_error = f"网络请求失败: {type(exc).__name__}: {exc}"
+                continue
+            if resp.status_code != 200 or "waf.tencent.com" in resp.text[:500]:
+                last_error = f"接口被拦截或返回异常(HTTP {resp.status_code})"
+                continue
+            try:
                 entry = resp.json().get("data", {}).get(hs_code, {})
-                if isinstance(entry, list):
-                    entry = {}
-                key = "hfqday" if fq == "hfq" else ("qfqday" if fq == "qfq" else "day")
-                if key not in entry:
-                    key = "day"
-                return entry.get(key) or []
-            except Exception:
-                time.sleep(0.8)
-        return []
+            except ValueError:
+                last_error = "响应不是合法 JSON（疑似 WAF 拦截页）"
+                continue
+            if isinstance(entry, list):
+                entry = {}
+            key = "hfqday" if fq == "hfq" else ("qfqday" if fq == "qfq" else "day")
+            if key not in entry:
+                key = "day"
+            return entry.get(key) or []
+        raise TencentSourceError(
+            f"腾讯行情接口连续 {retries} 次请求失败：{last_error}"
+        )
 
     @staticmethod
     def _filter_by_date(
@@ -463,8 +527,8 @@ class AkShareDataSource(DataSource):
     # ── Universe ─────────────────────────────────────────────
 
     def get_universe(self) -> list[str]:
-        """Return the shared default ETF universe (single source as Baostock /
-        the webapp seed pool — see core.data.default_universe)."""
+        """Return the shared default ETF universe (same single source as the
+        webapp seed pool — see core.data.default_universe)."""
         if self._universe_cache is not None:
             return self._universe_cache
         self._universe_cache = list(DEFAULT_ACTIVE_CODES)

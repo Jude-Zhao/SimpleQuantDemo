@@ -46,11 +46,6 @@ class MacroMonthly(Base):
 
     trade_month = Column(String, primary_key=True)  # YYYY-MM
 
-    # ── Money supply ────────────────────────────────────────
-    m2_yoy = Column(Float)          # M2 YoY (%)
-    m1_yoy = Column(Float)          # M1 YoY (%)
-    m1_m2_scissors = Column(Float)  # M1-M2 scissors diff (pct points, derived)
-
     # ── Economic indicators ─────────────────────────────────
     cpi_yoy = Column(Float)         # CPI YoY (%)
     ppi_yoy = Column(Float)         # PPI YoY (%)

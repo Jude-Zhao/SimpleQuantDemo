@@ -57,7 +57,7 @@ def test_create_and_get_task():
 
 
 def test_task_fields_update():
-    task = create_task(SyncType.ETF_MINUTE)
+    task = create_task(SyncType.ETF_DAILY)
     task.total = 5
     task.current = 2
     task.message = "测试消息"
@@ -177,7 +177,7 @@ def test_write_etf_data_adj_factor(db):
             },
         ]
     )
-    _write_etf_data(db, df, "daily")
+    _write_etf_data(db, df)
     rows = db.query(EtfDailyBar).order_by(EtfDailyBar.trade_date).all()
     assert rows[0].adj_factor == pytest.approx(1.5)
     assert rows[1].adj_factor is None
@@ -221,7 +221,7 @@ def test_filter_jump_anomalies_keeps_adjusted_data():
 
 
 class _FakeSource:
-    """Test double for primary/secondary data sources."""
+    """Test double for the primary data source."""
 
     def __init__(self, df: pd.DataFrame | None = None, error: Exception | None = None):
         self._df = df
@@ -287,10 +287,8 @@ def _run_inline_sync(
     monkeypatch,
     codes,
     primary,
-    secondary,
     start="2024-01-01",
     end="2024-12-31",
-    period="daily",
 ):
     """Run _run_etf_sync synchronously against the fixture engine."""
     from sqlalchemy.orm import sessionmaker
@@ -301,11 +299,10 @@ def _run_inline_sync(
     worker_session = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
     monkeypatch.setattr(db_mod, "SessionLocal", worker_session)
     monkeypatch.setattr(ss, "_get_primary_source", lambda: primary)
-    monkeypatch.setattr(ss, "_get_secondary_source", lambda: secondary)
 
-    task = ss.create_task(SyncType.ETF_DAILY if period in ("daily", "d") else SyncType.ETF_MINUTE)
+    task = ss.create_task(SyncType.ETF_DAILY)
     task.total = len(codes)
-    ss._run_etf_sync(task.task_id, list(codes), start, end, period)
+    ss._run_etf_sync(task.task_id, list(codes), start, end)
     return task
 
 
@@ -318,7 +315,6 @@ def test_run_etf_sync_source_error_keeps_old_data(db, monkeypatch):
         db,
         monkeypatch,
         ["A.SH"],
-        _FakeSource(error=RuntimeError("network down")),
         _FakeSource(error=RuntimeError("network down")),
     )
 
@@ -333,9 +329,7 @@ def test_run_etf_sync_empty_result_keeps_old_data(db, monkeypatch):
     """空返回：原数据逐行保留。"""
     _seed_old_bar(db, "A.SH", "2024-01-02", close=11.0)
 
-    task = _run_inline_sync(
-        db, monkeypatch, ["A.SH"], _FakeSource(df=pd.DataFrame()), _FakeSource(df=pd.DataFrame())
-    )
+    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=pd.DataFrame()))
 
     assert task.result["success_count"] == 0
     rows = _sec_rows(db, "A.SH")
@@ -364,7 +358,7 @@ def test_run_etf_sync_midwrite_error_rolls_back_keeps_old(db, monkeypatch):
     monkeypatch.setattr(ss, "EtfDailyBar", _ExplodingBar)
     df = _new_rows_df("A.SH", ["2024-01-02", "2024-01-03"])
 
-    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df), _FakeSource(df=df))
+    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df))
 
     assert task.result["success_count"] == 0
     assert task.result["failed_count"] == 1
@@ -398,7 +392,7 @@ def test_run_etf_sync_a_failure_does_not_block_b(db, monkeypatch):
     df_b = _new_rows_df("B.SH", ["2024-01-02"])
     source = _PerSymbolSource({"A.SH": RuntimeError("source down"), "B.SH": df_b})
 
-    task = _run_inline_sync(db, monkeypatch, ["A.SH", "B.SH"], source, source)
+    task = _run_inline_sync(db, monkeypatch, ["A.SH", "B.SH"], source)
 
     assert task.result["success_count"] == 1
     assert task.result["failed_count"] == 1
@@ -428,11 +422,10 @@ def test_run_etf_sync_single_commit_per_symbol(db, monkeypatch):
         monkeypatch.setattr(db_mod, "SessionLocal", WorkerSession)
         df = _new_rows_df("A.SH", ["2024-01-02", "2024-01-03"])
         monkeypatch.setattr(ss, "_get_primary_source", lambda: _FakeSource(df=df))
-        monkeypatch.setattr(ss, "_get_secondary_source", lambda: _FakeSource(df=df))
 
         task = ss.create_task(SyncType.ETF_DAILY)
         task.total = 1
-        ss._run_etf_sync(task.task_id, ["A.SH"], "2024-01-01", "2024-12-31", "daily")
+        ss._run_etf_sync(task.task_id, ["A.SH"], "2024-01-01", "2024-12-31")
     finally:
         event.remove(WorkerSession, "after_commit", _after_commit)
 
@@ -450,7 +443,7 @@ def test_run_etf_sync_jump_reject_keeps_old_data(db, monkeypatch):
             {"date": pd.Timestamp("2024-01-03"), "sec": "A.SH", "open": 5, "high": 5, "low": 5, "close": 5.0, "volume": 1, "amount": 1},  # -50% cliff
         ]
     )
-    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df), _FakeSource(df=df))
+    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df))
 
     assert task.result["success_count"] == 0
     assert task.result["rejected_count"] == 1
@@ -466,7 +459,7 @@ def test_run_etf_sync_success_replaces_range_outside_untouched(db, monkeypatch):
 
     df = _new_rows_df("A.SH", ["2024-01-02", "2024-01-03"])
     task = _run_inline_sync(
-        db, monkeypatch, ["A.SH"], _FakeSource(df=df), _FakeSource(df=df),
+        db, monkeypatch, ["A.SH"], _FakeSource(df=df),
         start="2024-01-01", end="2024-12-31",
     )
 
@@ -500,7 +493,7 @@ def test_write_etf_data_adj_factor_validation(db):
             for i, v in enumerate(values)
         ]
     )
-    _write_etf_data(db, df, "daily")
+    _write_etf_data(db, df)
 
     rows = db.query(EtfDailyBar).order_by(EtfDailyBar.trade_date).all()
     assert len(rows) == 6
@@ -509,67 +502,11 @@ def test_write_etf_data_adj_factor_validation(db):
 
 
 def test_run_etf_sync_warns_on_missing_adj_factor(db, monkeypatch):
-    """baostock 等来源无 adj_factor 列 → 写入成功但产生显式告警。"""
+    """无 adj_factor 列的来源 → 写入成功但产生显式告警。"""
     df = _new_rows_df("A.SH", ["2024-01-02"])  # _new_rows_df 不含 adj_factor 列
 
-    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df), _FakeSource(df=df))
+    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df))
 
     assert task.result["success_count"] == 1
     reasons = [str(w.get("reason", "")) for w in task.result["warnings"]]
     assert any("adj_factor" in r for r in reasons)
-
-
-# ── BUG-06: 分钟行情真实日内时间 ───────────────────────────────────────
-
-
-def test_minute_replace_half_open_and_same_day_bars(db, monkeypatch):
-    """同日多根 bar 均保存；结束日最后 bar 属于替换范围；区间外不变。"""
-    from webapp.models.market_data import EtfMinuteBar
-
-    old_times = [
-        pd.Timestamp("2024-01-02 09:35:00"),
-        pd.Timestamp("2024-01-03 15:00:00"),  # 结束日盘中（旧上界 <= end 会漏掉）
-        pd.Timestamp("2024-01-04 10:00:00"),  # 区间外
-    ]
-    for t in old_times:
-        db.add(
-            EtfMinuteBar(
-                id=f"A.SH_{t.strftime('%Y%m%d%H%M')}_5m",
-                sec_code="A.SH",
-                trade_datetime=t,
-                period="5m",
-                open=1, high=1, low=1, close=9.0,
-                volume=1, amount=1, source="old",
-            )
-        )
-    db.commit()
-
-    new_df = pd.DataFrame(
-        [
-            {"date": pd.Timestamp("2024-01-02 09:35:00"), "sec": "A.SH", "open": 1, "high": 1, "low": 1, "close": 20.0, "volume": 1, "amount": 1},
-            {"date": pd.Timestamp("2024-01-02 09:40:00"), "sec": "A.SH", "open": 1, "high": 1, "low": 1, "close": 20.0, "volume": 1, "amount": 1},
-            {"date": pd.Timestamp("2024-01-03 15:00:00"), "sec": "A.SH", "open": 1, "high": 1, "low": 1, "close": 20.0, "volume": 1, "amount": 1},
-        ]
-    )
-    task = _run_inline_sync(
-        db, monkeypatch, ["A.SH"], _FakeSource(df=new_df), _FakeSource(df=new_df),
-        start="2024-01-02", end="2024-01-03", period="5m",
-    )
-
-    assert task.result["success_count"] == 1
-    rows = (
-        db.query(EtfMinuteBar)
-        .filter(EtfMinuteBar.sec_code == "A.SH")
-        .order_by(EtfMinuteBar.trade_datetime)
-        .all()
-    )
-    # day1 两根同日 bar 均保存 + day2 结束日 15:00 bar 替换 + day3 区间外不变
-    assert len(rows) == 4
-    by_key = {(r.trade_datetime.strftime("%m-%d %H:%M")): r.close for r in rows}
-    assert by_key["01-02 09:35"] == 20.0
-    assert by_key["01-02 09:40"] == 20.0
-    assert by_key["01-03 15:00"] == 20.0
-    assert by_key["01-04 10:00"] == 9.0
-    # 无重复键（证券、时间、周期唯一）
-    keys = [(r.sec_code, r.trade_datetime, r.period) for r in rows]
-    assert len(keys) == len(set(keys))

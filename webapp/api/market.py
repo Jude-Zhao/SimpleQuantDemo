@@ -28,7 +28,6 @@ class EtfSyncRequest(BaseModel):
     sec_codes: list[str] | None = None
     start_date: str | None = None
     end_date: str | None = None
-    period: str = "daily"
 
 
 class SyncTaskResponse(BaseModel):
@@ -56,7 +55,6 @@ def sync_etf(req: EtfSyncRequest, db: Session = Depends(get_db)):
             sec_codes=req.sec_codes,
             start_date=req.start_date,
             end_date=req.end_date,
-            period=req.period,
         )
     except SyncConflictError as e:
         # A10: 与进行中的同步资源重叠 → 409
