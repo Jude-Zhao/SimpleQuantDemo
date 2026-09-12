@@ -8,7 +8,8 @@ from pydantic_settings import BaseSettings
 
 
 class ServerConfig(BaseModel):
-    host: str = "0.0.0.0"
+    # 默认仅监听本机；显式改为 0.0.0.0 可对外绑定，但外部绑定不自动提供认证
+    host: str = "127.0.0.1"
     port: int = 8000
 
 
@@ -29,6 +30,7 @@ class SyncConfig(BaseModel):
     """数据同步配置。"""
 
     default_start_date: str = "2021-01-04"  # 行情/宏观同步默认起始日期（回测起点）
+    max_concurrent_tasks: int = Field(default=2, ge=1)  # A10: 并发同步任务上限（正整数）
 
 
 class FactorsConfig(BaseModel):
@@ -49,12 +51,18 @@ class WebAppEnvSettings(BaseSettings):
 
 
 class WebAppConfig(BaseModel):
-    server: ServerConfig
-    database: DatabaseConfig
-    datasource: DatasourceConfig
-    sync: SyncConfig
-    factors: FactorsConfig
-    strategy: StrategyConfig
+    """应用配置。
+
+    各嵌套模型自带完整默认值（与仓库 config/webapp.yaml 保持一致）：
+    缺少 yaml 文件时 WebAppConfig(**{}) 仍可构造，不抛 ValidationError。
+    """
+
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    datasource: DatasourceConfig = Field(default_factory=DatasourceConfig)
+    sync: SyncConfig = Field(default_factory=SyncConfig)
+    factors: FactorsConfig = Field(default_factory=FactorsConfig)
+    strategy: StrategyConfig = Field(default_factory=StrategyConfig)
 
 
 def _load_yaml_config(path: Path) -> dict:
