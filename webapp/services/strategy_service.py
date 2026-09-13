@@ -78,7 +78,6 @@ def _build_meta() -> list[StrategyMeta]:
     """
     cats = categories_to_dict(include_empty=True)
     non_empty = [c for c in cats if not c["is_empty"]]
-    empty_keys = [c["key"] for c in cats if c["is_empty"]]
 
     # 默认参数来自 research/tune_strategy_params.py 网格搜索
     # （区间 2021-01-04~2026-08-14，5d 调仓，1bp，top_n=5）。
@@ -87,8 +86,10 @@ def _build_meta() -> list[StrategyMeta]:
     default_exponents = {"momentum": 0.5, "reversal": 1.0, "volatility": 1.0, "volume": 1.25}
     default_beta = 0.5
 
-    # Preserve forward order for the slider rendering.
-    slider_options = [{"key": c["key"], "display_name": c["display_name"]} for c in cats]
+    # 策略滑杆只列非空类别：空类别（factors: []）不参与得分合成，若可启用会
+    # 触发资格校验失败（EAA 滑杆默认 α=1 且最小 0.1，无法归零）。空类别加入
+    # 因子后随 factors.yaml 自动出现在滑杆中。
+    slider_options = [{"key": c["key"], "display_name": c["display_name"]} for c in non_empty]
 
     return [
         StrategyMeta(
