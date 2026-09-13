@@ -25,47 +25,29 @@ def test_no_unadjusted_fallback(monkeypatch):
     assert out.empty
 
 
-def _install_tencent_stub(monkeypatch, hfq_rows: list[list], raw_rows: list[list]) -> None:
-    def fake_fetch(hs_code: str, start: str, end: str, fq: str, retries: int = 3):
-        return list(hfq_rows) if fq == "hfq" else list(raw_rows)
+def _install_segment_stub(monkeypatch) -> list[tuple[str, str]]:
+    """记录 _tencent_get 的分段调用（返回空行），供分段边界断言。"""
+    calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(AkShareDataSource, "_tencent_fetch_range", staticmethod(fake_fetch))
+    def fake_get(hs_code: str, start: str, end: str, fq: str, retries: int = 3):
+        calls.append((start, end))
+        return []
+
+    monkeypatch.setattr(AkShareDataSource, "_tencent_get", staticmethod(fake_get))
+    return calls
 
 
-def test_hfq_adj_factor_computed(monkeypatch):
-    """adj_factor = hfq_close / raw_close（10拆1 例：复权价 11、现价 10 → 1.1）。"""
-    hfq_rows = [
-        ["2024-01-02", "10.0", "11.0", "10.5", "9.9", "1000", "10000"],
-        ["2024-01-03", "11.0", "12.1", "11.5", "10.9", "1000", "10000"],
+def test_tencent_fetch_range_two_year_segments(monkeypatch):
+    """2 年分段：2021-01-04~2026-09-11 → 恰 3 段，段边界如开发计划 2.1(a)。"""
+    calls = _install_segment_stub(monkeypatch)
+
+    AkShareDataSource._tencent_fetch_range("sh510300", "2021-01-04", "2026-09-11", "hfq")
+
+    assert calls == [
+        ("2021-01-01", "2022-12-31"),
+        ("2023-01-01", "2024-12-31"),
+        ("2025-01-01", "2026-09-11"),
     ]
-    raw_rows = [
-        ["2024-01-02", "9.0", "10.0", "9.5", "8.9", "1000", "10000"],
-        ["2024-01-03", "9.0", "11.0", "9.5", "8.9", "1000", "10000"],
-    ]
-    _install_tencent_stub(monkeypatch, hfq_rows, raw_rows)
-
-    ds = AkShareDataSource()
-    df = ds._fetch_hfq_price(None, "510300.SH", "2024-01-02", "2024-01-03")
-
-    assert not df.empty
-    assert df["adj_factor"].tolist() == pytest.approx([1.1, pytest.approx(12.1 / 11.0)])
-    assert set(df["source"]) == {"akshare"}
-
-
-def test_hfq_raw_missing_adj_factor_is_nan(monkeypatch):
-    """raw 序列缺失时 adj_factor 显式置 NaN（不默认造 1）。"""
-    hfq_rows = [
-        ["2024-01-02", "10.0", "11.0", "10.5", "9.9", "1000", "10000"],
-    ]
-    _install_tencent_stub(monkeypatch, hfq_rows, [])
-
-    ds = AkShareDataSource()
-    df = ds._fetch_hfq_price(None, "510300.SH", "2024-01-02", "2024-01-02")
-
-    assert not df.empty
-    assert pd.isna(df["adj_factor"].iloc[0])
-    # close 仍是后复权价，不是现价
-    assert df["close"].iloc[0] == pytest.approx(11.0)
 
 
 # ── 腾讯源加固：UA / 限速 / 指数退避 / WAF 识别 ────────────────────────
@@ -104,25 +86,30 @@ def test_tencent_get_sends_browser_headers(monkeypatch):
     assert "param=sh510300,day," in calls["url"]
 
 
-def test_tencent_get_waf_page_raises_after_retries(monkeypatch):
-    """WAF 拦截页触发指数退避重试，耗尽后抛 TencentSourceError。"""
+@pytest.mark.parametrize(
+    "status_code, text",
+    [
+        (501, ""),
+        (200, "<html>waf.tencent.com/501page.html</html>"),
+    ],
+)
+def test_tencent_get_waf_fails_immediately(monkeypatch, status_code, text):
+    """WAF 拦截（HTTP 501/拦截页）不重试：恰 1 次请求即抛，无退避 sleep。"""
     attempts = {"n": 0}
     sleeps: list[float] = []
 
     def fake_get(url, headers=None, timeout=None):
         attempts["n"] += 1
-        return _FakeResponse(status_code=501, text="<html>waf.tencent.com/501page.html</html>")
+        return _FakeResponse(status_code=status_code, text=text)
 
+    monkeypatch.setattr(ak_mod, "_next_request_at", 0.0)
     monkeypatch.setattr(ak_mod.requests, "get", fake_get)
     monkeypatch.setattr(ak_mod.time, "sleep", lambda s: sleeps.append(s))
 
-    with pytest.raises(TencentSourceError, match="腾讯行情接口"):
+    with pytest.raises(TencentSourceError, match="WAF"):
         AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=3)
-    assert attempts["n"] == 3
-    # 指数退避：第 2/3 次重试前分别等待 1s、2s（sleeps 里混有限速器
-    # 的节拍等待，精确匹配退避序列取值）
-    backoff = [s for s in sleeps if s in ak_mod._TENCENT_RETRY_DELAYS]
-    assert backoff == [1.0, 2.0]
+    assert attempts["n"] == 1
+    assert sleeps == []
 
 
 def test_tencent_get_bad_json_retries_then_raises(monkeypatch):
@@ -153,6 +140,25 @@ def test_tencent_get_network_error_raises(monkeypatch):
         AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=1)
 
 
+def test_tencent_get_network_error_still_retries(monkeypatch):
+    """其他非 200（502/503 等瞬时错误）保留退避重试，耗尽后抛错。"""
+    attempts = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_get(url, headers=None, timeout=None):
+        attempts["n"] += 1
+        return _FakeResponse(status_code=502, text="bad gateway")
+
+    monkeypatch.setattr(ak_mod, "_next_request_at", 0.0)
+    monkeypatch.setattr(ak_mod.requests, "get", fake_get)
+    monkeypatch.setattr(ak_mod.time, "sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(TencentSourceError, match="HTTP 502"):
+        AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=2)
+    assert attempts["n"] == 2
+    assert 1.0 in sleeps
+
+
 def test_tencent_get_parses_hfq_rows(monkeypatch):
     """正常 JSON 应答解析为行数据。"""
     payload = {
@@ -181,17 +187,31 @@ def test_tencent_get_empty_data_is_not_error(monkeypatch):
     assert rows == []
 
 
-def test_throttle_enforces_min_interval(monkeypatch):
-    """全局限速器：连续调用第二次必须等待约 MIN_INTERVAL。"""
+def test_throttle_applies_interval_range(monkeypatch):
+    """全局限速器：第二次等待落在抖动区间 [min, max] 内。"""
     sleeps: list[float] = []
     monkeypatch.setattr(ak_mod, "_next_request_at", 0.0)
     monkeypatch.setattr(ak_mod.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(ak_mod, "_TENCENT_INTERVAL_RANGE", (0.75, 1.25))
 
     ak_mod._throttle()
     ak_mod._throttle()
 
-    # 第一次不等待；第二次等待 ≈ MIN_INTERVAL
-    assert sleeps and sleeps[-1] == pytest.approx(ak_mod._TENCENT_MIN_INTERVAL, abs=0.05)
+    # 第一次不等待；第二次等待为 random.uniform(0.75, 1.25) 的取值
+    assert sleeps and 0.75 <= sleeps[-1] <= 1.25
+
+
+def test_set_tencent_interval_range(monkeypatch):
+    """setter 覆盖全局节流区间；非法区间（low>high 或 low<=0）拒绝。"""
+    monkeypatch.setattr(ak_mod, "_TENCENT_INTERVAL_RANGE", (0.75, 1.25))
+
+    ak_mod.set_tencent_interval_range(0.5, 0.9)
+    assert ak_mod._TENCENT_INTERVAL_RANGE == (0.5, 0.9)
+
+    with pytest.raises(ValueError):
+        ak_mod.set_tencent_interval_range(1.5, 1.0)
+    with pytest.raises(ValueError):
+        ak_mod.set_tencent_interval_range(0.0, 1.0)
 
 
 def test_get_etf_price_by_codes_propagates_tencent_error(monkeypatch):

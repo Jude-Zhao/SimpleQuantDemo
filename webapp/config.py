@@ -21,7 +21,10 @@ class DatasourceConfig(BaseModel):
     primary: str = "akshare"
     cache_enabled: bool = True
     cache_days_daily: int = 365
-    jump_threshold: float = 15.0  # 单日涨跌幅(%)超此值视为疑似未复权拆分/异常，写入时拦截
+    jump_threshold: float = 45.0  # 单日涨跌幅(%)超此值写入时告警（不剔除）；45 覆盖 ±20% 涨跌停、捕捉 ~-50% 拆分断崖
+    tencent_min_interval: float = 0.75  # 腾讯请求最小间隔(秒)
+    tencent_max_interval: float = 1.25  # 腾讯请求最大间隔(秒)，与 min 构成均匀抖动区间
+    source_break_threshold: int = Field(default=3, ge=1)  # 连续 N 只源级失败触发熔断
 
 
 class SyncConfig(BaseModel):

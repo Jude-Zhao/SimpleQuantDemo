@@ -213,10 +213,10 @@ function setupSyncButton() {
             if (finalTask.status === "completed") {
                 const r = finalTask.result || {};
                 resultText.style.display = "block";
-                resultText.innerHTML = `✅ 同步完成：成功 <strong>${r.success_count || 0}</strong> 只，失败 <strong>${r.failed_count || 0}</strong> 只，校验中止 <strong>${r.rejected_count || 0}</strong> 只，共 <strong>${r.total_rows || 0}</strong> 条数据`;
+                resultText.innerHTML = `✅ 同步完成：成功 <strong>${r.success_count || 0}</strong> 只，失败 <strong>${r.failed_count || 0}</strong> 只，熔断跳过 <strong>${r.skipped_count || 0}</strong> 只，共 <strong>${r.total_rows || 0}</strong> 条数据`;
                 resultText.innerHTML += renderSyncDetail(r);
                 Components.toast("行情数据同步完成",
-                    (r.failed_count || 0) + (r.rejected_count || 0) > 0 ? "warning" : "success");
+                    (r.failed_count || 0) + (r.skipped_count || 0) > 0 ? "warning" : "success");
             } else {
                 resultText.style.display = "block";
                 resultText.innerHTML = `❌ 同步失败：${Utils.escapeHtml(finalTask.error || "未知错误")}`;
@@ -257,14 +257,14 @@ function setupMacroSyncButton() {
 }
 
 function renderSyncDetail(r) {
-    /* 逐标的明细：状态/来源/写入区间/行数/具体原因，失败与校验中止高亮。 */
+    /* 逐标的明细：状态/来源/写入区间/行数/具体原因，失败高亮，未尝试灰色。 */
     const rows = r.results || [];
     const warnings = r.warnings || [];
     if (!rows.length && !warnings.length) return "";
     const border = "border-bottom:1px solid rgba(128,128,128,0.25);";
     const statusBadge = (s) => {
         if (s === "success") return `<span style="color:var(--success,#16a34a);">成功</span>`;
-        if (s === "rejected") return `<span style="color:var(--warning,#d97706);">校验中止</span>`;
+        if (s === "skipped") return `<span style="color:var(--text-muted,#9ca3af);">未尝试</span>`;
         return `<span style="color:var(--danger,#dc2626);">失败</span>`;
     };
     const esc = (v) => Utils.escapeHtml(v == null ? "" : String(v));

@@ -7,7 +7,6 @@ Provides convenience functions used by other webapp services.
 from __future__ import annotations
 
 import logging
-import math
 
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -21,32 +20,26 @@ logger = logging.getLogger(__name__)
 _config = get_config()
 
 
-def _validated_adj_factor(value) -> float | None:
-    """BUG-05: adj_factor 必须有限且 > 0，否则按显式缺失（NULL）处理。
-
-    不默认造 1，不用于宣称真实现价。
-    """
-    if value is None or pd.isna(value):
-        return None
-    try:
-        val = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(val) or val <= 0:
-        return None
-    return val
-
-
 def _get_primary_source():
     """Get primary data source instance.
 
     Uses AkShare (Tencent 后复权 hfq, stable long history) as the sole ETF
     data source. Raises when AkShare is unavailable — no silent fallback.
+
+    腾讯请求节流区间从 datasource 配置注入（模块级全局节拍，见
+    akshare_source.set_tencent_interval_range）。
     """
-    from core.data.akshare_source import AkShareDataSource, ensure_akshare_available
+    from core.data.akshare_source import (
+        AkShareDataSource,
+        ensure_akshare_available,
+        set_tencent_interval_range,
+    )
 
     ensure_akshare_available()
-    return AkShareDataSource()
+    source = AkShareDataSource()
+    ds_cfg = get_config().datasource
+    set_tencent_interval_range(ds_cfg.tencent_min_interval, ds_cfg.tencent_max_interval)
+    return source
 
 
 def _cache_reader(db: Session):
@@ -82,7 +75,6 @@ def _read_daily_cache(db: Session, sec_codes, start_date, end_date) -> pd.DataFr
             "close": r.close,
             "volume": r.volume,
             "amount": r.amount,
-            "adj_factor": r.adj_factor,
         }
         for r in rows
     ]
@@ -120,7 +112,6 @@ def _write_daily_cache(db: Session, df: pd.DataFrame) -> None:
             close=float(row.get("close", 0)),
             volume=float(row.get("volume", 0)),
             amount=float(row.get("amount", 0)),
-            adj_factor=_validated_adj_factor(row.get("adj_factor")),
             source=row.get("source", ""),
         )
         db.add(bar)

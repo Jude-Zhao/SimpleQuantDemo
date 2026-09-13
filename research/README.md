@@ -40,7 +40,7 @@ research/
 外部数据源(AkShare 腾讯fqkline后复权，唯一源)
         │  同步(手动触发)
         ▼
-data/simple_quant.db  ── etf_daily_bar 表（后复权价 + adj_factor 复权因子）
+data/simple_quant.db  ── etf_daily_bar 表（后复权价）
         │  research 用 SqliteDataSource 读取
         ▼
 > research 的因子池与 core 的注册表是**两套独立**的。研究因子用 `research.factors` 注册，`resolve_factor_class` 会**先查研究池、再回退到 core 内置因子**，所以研

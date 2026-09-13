@@ -124,10 +124,10 @@ from core.data import SqliteDataSource
 ## 5. 数据库与数据源
 
 - **SQLite 单文件**：`data/simple_quant.db`（Web 与 research 共享）。连接串在 `config/webapp.yaml` 的 `database.url`，可用环境变量 `DATABASE_URL` 覆盖（见 `.env.example`）。
-- 主要表：`etf_daily_bar`（含 `adj_factor` 复权因子列）、`macro_daily`（宏观）、`universe_items`（标的池）、`strategy_runs`（策略运行记录）、classification/constraint 相关表。
-- **后复权**：`etf_daily_bar.close` 是后复权价，展示现价需 `close / adj_factor` 还原。
+- 主要表：`etf_daily_bar`、`macro_daily`（宏观）、`universe_items`（标的池）、`strategy_runs`（策略运行记录）、classification/constraint 相关表。
+- **后复权**：`etf_daily_bar.close` 是后复权价；系统不保存真实价/复权因子（`adj_factor` 列已于 2026-09-13 删除），如需真实价须另行回补未复权序列换算。
 - 数据源：唯一源 AkShare（腾讯 fqkline 后复权），**无备用源**（baostock 对 ETF 的复权参数静默无效、历史仅约 8 个月，已于 2026-09-12 移除）。`config/webapp.yaml` 配 `primary/cache`。
-- **腾讯源加固**：浏览器 UA + Referer、全局最小请求间隔 0.4s（跨线程节流）、指数退避重试（1/2/4s）、WAF 拦截页识别（`TencentSourceError` fail-fast，失败原因透传到任务结果）。
+- **腾讯源加固**：浏览器 UA + Referer；全局请求间隔 0.75~1.25s 均匀抖动（可配 `datasource.tencent_min_interval/tencent_max_interval`）；2 年分段拉取（单请求上限 640 行）；指数退避重试（1/2/4s，仅网络异常/坏 JSON/其他非 200）；WAF 拦截（HTTP 501/拦截页）**不重试**立即抛 `TencentSourceError`；连续 3 只源级失败熔断、剩余标的记"未尝试"（`source_break_threshold`），失败原因透传任务结果。
 - 同步入口：Web 设置页手动触发，走 `webapp/services/sync_service.py`（后台线程 + 进度条 + 逐标的明细/失败原因展示）。
 
 ## 6. 环境搭建与运行
@@ -188,7 +188,7 @@ pytest -q        # 快速静默
 2. **因子改名报错**：`Factor 'xxx' is not registered` 通常是 `factors.yaml`/`factor_config.yaml` 里 `name` 拼错，或研究池与 core 都没注册该因子。
 3. **研究因子不影响 Web**：两池隔离是设计行为，移植按 4.3 节操作。
 4. **IC 全 NaN**：截面标的太少（IC 至少 `ic_min_observations=10` 个有效观测）。
-5. **价格对不上行情软件**：库里 `close` 是后复权价，需 `close / adj_factor` 才等于真实（不复权）现价。
+5. **价格对不上行情软件**：库里 `close` 是后复权价，与行情软件的未复权现价本就不同口径；系统不保存真实价（复权因子已删除），无法再换算真实现价。
 6. **默认参数改一处漏一处**：改 FAA/EAA 默认权重/指数/β，需同时改 `webapp/services/strategy_service.py` 与 `research/config.py`。
 7. **数据同步**：research 只读不回写；新增标的后需在 Web 同步行情，否则回测该标的数据缺失。
 8. **回测起始期**：长窗口因子需要预热数据，Web 策略用 `_WARMUP_DAYS=250`，research 用 `--data-start-date` 提前加载（IC/回测仍从 `--start-date` 起算）。

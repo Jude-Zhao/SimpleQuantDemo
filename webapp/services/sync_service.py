@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 from webapp.models.market_data import EtfDailyBar
 from webapp.services.data_service import (
     _get_primary_source,
-    _validated_adj_factor,
     get_etf_list,
 )
 
@@ -234,13 +233,16 @@ def _run_etf_sync(
             task.message = "开始同步..."
 
         from webapp.config import get_config
-        _jump_threshold = get_config().datasource.jump_threshold
+        _ds_config = get_config().datasource
+        _jump_threshold = _ds_config.jump_threshold
+        _source_break_after = _ds_config.source_break_threshold
 
         primary = _get_primary_source()
 
         success_count = 0
         failed_codes: list[str] = []
-        rejected_codes: list[str] = []
+        skipped_codes: list[str] = []
+        consecutive_blocked = 0
         total_rows = 0
         all_warnings: list[dict] = []
         per_symbol: list[dict] = []
@@ -284,38 +286,28 @@ def _run_etf_sync(
                     reason = f"主源获取失败({fetch_error})，保留原数据"
                     failed_codes.append(f"{sec_code}: {reason}")
                     _record(sec_code, "failed", "primary", reason)
+                    if fetch_error.startswith("TencentSourceError"):
+                        # WAF 拦截为 IP 级封禁：连续 N 只源级失败即熔断，
+                        # 剩余标的不再尝试，避免白烧请求加剧封锁
+                        consecutive_blocked += 1
+                        if consecutive_blocked >= _source_break_after:
+                            skip_reason = "数据源连续拦截触发熔断，未尝试；建议稍后重试"
+                            for rest in sec_codes[i:]:
+                                skipped_codes.append(rest)
+                                _record(rest, "skipped", "primary", skip_reason)
+                            with _tasks_lock:
+                                task.current = len(sec_codes)
+                            break
+                    else:
+                        consecutive_blocked = 0
                     with _tasks_lock:
                         task.current = i
                     continue
 
-                # 2. 断崖校验：剔除疑似未复权的拆分/异常跳变；有剔除即中止该标的替换，
-                #    不得用剩余行宣称完整替换成功
-                df, jump_warnings = _filter_jump_anomalies(df, threshold=_jump_threshold)
-                if jump_warnings:
-                    all_warnings.extend(jump_warnings)
-                    rejected_codes.append(
-                        f"{sec_code}: 跳变校验剔除 {len(jump_warnings)} 行，保留原数据未替换"
-                    )
-                    _record(
-                        sec_code,
-                        "rejected",
-                        "primary",
-                        f"跳变校验剔除 {len(jump_warnings)} 行，保留原数据未替换",
-                    )
-                    with _tasks_lock:
-                        task.current = i
-                    continue
-
-                # BUG-05: adj_factor 缺失或含非法值时显式告警（按 NULL 保存，
-                # 不默认造 1）
-                if "adj_factor" not in df.columns:
-                    all_warnings.append(
-                        {"sec": sec_code, "date": "", "chg": None, "reason": "adj_factor 列缺失，按 NULL 保存"}
-                    )
-                elif df["adj_factor"].isna().any():
-                    all_warnings.append(
-                        {"sec": sec_code, "date": "", "chg": None, "reason": "adj_factor 含缺失/非法值，按 NULL 保存"}
-                    )
+                # 2. 断崖校验：仅告警不剔除——超阈值行照常写入，记入任务
+                #    warnings 展示，保留可观测性且不误杀真实行情
+                _, jump_warnings = _collect_jump_warnings(df, threshold=_jump_threshold)
+                all_warnings.extend(jump_warnings)
 
                 # 3. 单事务替换：删除与写入同一事务一次 commit，任何异常整体回滚
                 rows_written = _replace_etf_range(
@@ -323,10 +315,12 @@ def _run_etf_sync(
                 )
                 total_rows += rows_written
                 success_count += 1
+                consecutive_blocked = 0
                 _record(sec_code, "success", "primary", df_written=df, rows=rows_written)
 
             except Exception as e:
                 db.rollback()
+                consecutive_blocked = 0
                 failed_codes.append(f"{sec_code}: {e}")
                 _record(sec_code, "failed", "primary", reason=str(e))
 
@@ -336,16 +330,19 @@ def _run_etf_sync(
         with _tasks_lock:
             task.status = SyncStatus.COMPLETED
             task.end_time = datetime.now()
-            task.message = (
+            message = (
                 f"同步完成：成功 {success_count} 只，失败 {len(failed_codes)} 只，"
-                f"校验中止 {len(rejected_codes)} 只，共 {total_rows} 条数据"
+                f"共 {total_rows} 条数据"
             )
+            if skipped_codes:
+                message += f"，熔断跳过 {len(skipped_codes)} 只；数据源被限流，建议稍后重试同步"
+            task.message = message
             task.result = {
                 "success_count": success_count,
                 "failed_count": len(failed_codes),
                 "failed_codes": failed_codes,
-                "rejected_count": len(rejected_codes),
-                "rejected_codes": rejected_codes,
+                "skipped_count": len(skipped_codes),
+                "skipped_codes": skipped_codes,
                 "total_rows": total_rows,
                 "warnings": all_warnings,
                 "warning_count": len(all_warnings),
@@ -429,25 +426,19 @@ def _fetch_etf_from(
     return df, ""
 
 
-def _filter_jump_anomalies(
+def _collect_jump_warnings(
     df: pd.DataFrame,
     threshold: float = 15.0,
 ) -> tuple[pd.DataFrame, list[dict]]:
-    """Drop rows whose daily close change exceeds ``threshold`` percent.
+    """Collect rows whose daily close change exceeds ``threshold`` percent.
 
-    Only applies to rows without an ``adj_factor`` column (unadjusted data).
-    Tencent hfq rows carry ``adj_factor`` and are already properly adjusted,
-    so a >15% move there is a real market event (e.g. the 2024-09 A-share
-    rally) and must be kept. Unadjusted rows can hide a share split cliff
-    (~-50%), so they are dropped with a warning to prevent bad rows from
-    polluting factor calculations.
+    仅告警不剔除：数据行始终原样返回（照常写入），超阈值行作为 warnings
+    交由任务结果展示——保留对源数据毛刺的可观测性，同时不误杀真实行情
+    （如 2024-09-30 大涨）。
     """
-    if df.empty:
-        return df, []
-    if "adj_factor" in df.columns:
-        return df, []
-    keep = pd.Series(True, index=df.index)
     warnings: list[dict] = []
+    if df.empty:
+        return df, warnings
     for sec in df["sec"].unique():
         sub = df[df["sec"] == sec].sort_values("date").copy()
         sub["chg"] = sub["close"].pct_change(fill_method=None) * 100
@@ -460,8 +451,7 @@ def _filter_jump_anomalies(
                     "chg": round(float(r["chg"]), 2) if pd.notna(r["chg"]) else None,
                 }
             )
-        keep.loc[sub.index] = sub["chg"].fillna(0).abs() <= threshold
-    return df[keep], warnings
+    return df, warnings
 
 
 def _write_etf_data(db: Session, df: pd.DataFrame, commit: bool = True) -> int:
@@ -479,8 +469,6 @@ def _write_etf_data(db: Session, df: pd.DataFrame, commit: bool = True) -> int:
         date_val = pd.to_datetime(row["date"]).date()
         bar_id = f"{sec}_{date_val.isoformat()}"
 
-        adj_factor = _validated_adj_factor(row.get("adj_factor"))
-
         bar = EtfDailyBar(
             id=bar_id,
             sec_code=sec,
@@ -491,7 +479,6 @@ def _write_etf_data(db: Session, df: pd.DataFrame, commit: bool = True) -> int:
             close=float(row.get("close", 0)),
             volume=float(row.get("volume", 0)),
             amount=float(row.get("amount", 0)),
-            adj_factor=adj_factor,
             source=row.get("source", "akshare"),
         )
         db.add(bar)

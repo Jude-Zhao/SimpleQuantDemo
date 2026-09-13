@@ -8,6 +8,7 @@ and version.
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from typing import Sequence
@@ -43,16 +44,24 @@ _TENCENT_HEADERS = {
 # 重试退避序列（秒）：WAF 拦截多为频率风控，固定短间隔快速重试只会加剧拦截。
 _TENCENT_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
-# 全局最小请求间隔（秒）：跨实例、跨线程生效。50 只 ETF 全量同步约 600 个
-# 请求，0.4s 间隔约 4 分钟跑完，可将请求频率压在 WAF 风控阈值之下。
-_TENCENT_MIN_INTERVAL = 0.4
+# 全局请求间隔区间（秒）：跨实例、跨线程生效，每次请求在区间内均匀抖动。
+# 均值 1.0s ≈ 60 请求/分钟，压在 WAF 风控阈值（~100 请求/分钟，估计值）之下。
+_TENCENT_INTERVAL_RANGE = (0.75, 1.25)
 
 _throttle_lock = threading.Lock()
 _next_request_at = 0.0
 
 
+def set_tencent_interval_range(low: float, high: float) -> None:
+    """装配层按配置覆盖全局节流区间（节拍为全进程共享，故为模块级 setter）。"""
+    global _TENCENT_INTERVAL_RANGE
+    if low <= 0 or high < low:
+        raise ValueError(f"非法的腾讯请求间隔区间: ({low}, {high})")
+    _TENCENT_INTERVAL_RANGE = (float(low), float(high))
+
+
 def _throttle() -> None:
-    """串行化腾讯请求并保持全局最小间隔（持锁 sleep，多任务共享一个节拍）。"""
+    """串行化腾讯请求并保持全局抖动间隔（持锁 sleep，多任务共享一个节拍）。"""
     global _next_request_at
     with _throttle_lock:
         now = time.monotonic()
@@ -60,7 +69,7 @@ def _throttle() -> None:
         if wait > 0:
             time.sleep(wait)
             now = time.monotonic()
-        _next_request_at = max(now, _next_request_at) + _TENCENT_MIN_INTERVAL
+        _next_request_at = max(now, _next_request_at) + random.uniform(*_TENCENT_INTERVAL_RANGE)
 
 
 def ensure_akshare_available():
@@ -143,8 +152,6 @@ class AkShareDataSource(DataSource):
 
         result = pd.concat(all_frames, ignore_index=True)
         numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
-        if "adj_factor" in result.columns:
-            numeric_cols.append("adj_factor")
         for col in numeric_cols:
             result[col] = pd.to_numeric(result[col], errors="coerce")
 
@@ -168,9 +175,10 @@ class AkShareDataSource(DataSource):
         Tencent is the only reachable source that correctly adjusts for ETF
         share splits in this deployment's network (Eastmoney is blocked;
         baostock's adjust flag is silently ignored for ETFs and would leave
-        split cliffs). The endpoint caps each request at 640 rows, so history
-        is fetched in per-year segments. ``adj_factor = hfq_close / raw_close``
-        lets a true market price be recovered via close / adj_factor.
+        split cliffs). The endpoint caps each request at 640 rows (~2.6
+        years of trading days), so history is fetched in multi-year
+        segments; only the hfq series is fetched (no unadjusted series or
+        derived adjustment factor).
         """
         hs_code = self._to_sina_code(sec_code)
         start = pd.Timestamp(start_date).strftime("%Y-%m-%d") if start_date else "1990-01-01"
@@ -185,18 +193,6 @@ class AkShareDataSource(DataSource):
         df = pd.DataFrame([self._tencent_row_map(r, sec_code) for r in hfq_rows])
         df = df.drop_duplicates(subset="date", keep="last")
         df = df.sort_values("date").reset_index(drop=True)
-
-        # Compute weekly-free adj_factor from the unadjusted series.
-        raw_rows = self._tencent_fetch_range(hs_code, start, end, "")
-        if raw_rows:
-            raw_df = pd.DataFrame(
-                [{"date": pd.Timestamp(r[0]), "raw_close": float(r[2])} for r in raw_rows]
-            ).drop_duplicates(subset="date", keep="last")
-            df = df.merge(raw_df, on="date", how="left")
-            df["adj_factor"] = df["close"] / df["raw_close"]
-            df = df.drop(columns=["raw_close"])
-        else:
-            df["adj_factor"] = float("nan")
 
         df["source"] = "akshare"
         return self._filter_by_date(df, start_date, end_date)
@@ -215,6 +211,9 @@ class AkShareDataSource(DataSource):
             "amount": float(row[6]) if len(row) > 6 and row[6] else 0.0,
         }
 
+    # 单请求上限 640 行 ≈ 2.6 年交易日，按 2 年分段保证不截断。
+    _SEGMENT_YEARS = 2
+
     @staticmethod
     def _tencent_fetch_range(
         hs_code: str,
@@ -223,15 +222,20 @@ class AkShareDataSource(DataSource):
         fq: str,
         retries: int = 3,
     ) -> list[list]:
-        """Fetch kline rows for a date range, split into per-year segments."""
+        """Fetch kline rows for a date range, split into multi-year segments."""
         if requests is None:
             return []
         out: list[list] = []
-        for year in range(int(start[:4]), int(end[:4]) + 1):
+        start_year = int(start[:4])
+        end_year = int(end[:4])
+        year = start_year
+        while year <= end_year:
+            seg_end_year = min(year + AkShareDataSource._SEGMENT_YEARS - 1, end_year)
             seg_start = f"{year}-01-01"
-            seg_end = f"{year}-12-31" if year < int(end[:4]) else end
+            seg_end = f"{seg_end_year}-12-31" if seg_end_year < end_year else end
             rows = AkShareDataSource._tencent_get(hs_code, seg_start, seg_end, fq, retries)
             out.extend(rows)
+            year = seg_end_year + 1
         return out
 
     @staticmethod
@@ -239,9 +243,11 @@ class AkShareDataSource(DataSource):
         """Fetch one kline segment with browser headers, throttling, and
         exponential backoff.
 
-        网络异常 / WAF 拦截页 / 非法 JSON 视为可重试错误；重试耗尽抛
-        ``TencentSourceError``（携带最后一次失败原因，供同步任务展示）。
-        接口正常应答（含空数据）不重试，直接返回。
+        WAF 拦截（HTTP 501 / 拦截页）为分钟级 IP 封禁，重试无益且可能加剧，
+        立即抛 ``TencentSourceError``；网络异常 / 非法 JSON / 其他非 200
+        瞬时错误按 (1.0, 2.0, 4.0) 退避重试，耗尽抛 ``TencentSourceError``
+        （携带最后一次失败原因，供同步任务展示）。接口正常应答（含空数据）
+        不重试，直接返回。
         """
         url = (
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
@@ -258,8 +264,12 @@ class AkShareDataSource(DataSource):
             except Exception as exc:
                 last_error = f"网络请求失败: {type(exc).__name__}: {exc}"
                 continue
-            if resp.status_code != 200 or "waf.tencent.com" in resp.text[:500]:
-                last_error = f"接口被拦截或返回异常(HTTP {resp.status_code})"
+            if resp.status_code == 501 or "waf.tencent.com" in resp.text[:500]:
+                raise TencentSourceError(
+                    f"腾讯行情接口被 WAF 拦截(HTTP {resp.status_code})，IP 封禁为分钟级，请稍后重试"
+                )
+            if resp.status_code != 200:
+                last_error = f"接口返回异常(HTTP {resp.status_code})"
                 continue
             try:
                 entry = resp.json().get("data", {}).get(hs_code, {})

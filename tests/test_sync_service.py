@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from core.data.akshare_source import TencentSourceError
 from webapp.services.sync_service import (
     SyncStatus,
     SyncType,
@@ -145,47 +146,9 @@ def test_etf_sync_schema(db):
     assert rows[0].close == pytest.approx(3.53)
 
 
-def test_write_etf_data_adj_factor(db):
-    """adj_factor column is persisted; NaN becomes NULL."""
-    from webapp.models.market_data import EtfDailyBar
-
-    from webapp.services.sync_service import _write_etf_data
-
-    df = pd.DataFrame(
-        [
-            {
-                "date": pd.Timestamp("2024-01-02"),
-                "sec": "510300.SH",
-                "open": 3.5,
-                "high": 3.55,
-                "low": 3.45,
-                "close": 3.53,
-                "volume": 1000,
-                "amount": 3500,
-                "adj_factor": 1.5,
-            },
-            {
-                "date": pd.Timestamp("2024-01-03"),
-                "sec": "510300.SH",
-                "open": 3.6,
-                "high": 3.65,
-                "low": 3.55,
-                "close": 3.6,
-                "volume": 1000,
-                "amount": 3500,
-                "adj_factor": float("nan"),
-            },
-        ]
-    )
-    _write_etf_data(db, df)
-    rows = db.query(EtfDailyBar).order_by(EtfDailyBar.trade_date).all()
-    assert rows[0].adj_factor == pytest.approx(1.5)
-    assert rows[1].adj_factor is None
-
-
-def test_filter_jump_anomalies_blocks_unadjusted_cliff():
-    """Unadjusted data (no adj_factor) with a >15% cliff row is dropped."""
-    from webapp.services.sync_service import _filter_jump_anomalies
+def test_collect_jump_warnings_warns_on_jump():
+    """断崖校验降级为告警：超阈值行不剔除，warnings 记录明细。"""
+    from webapp.services.sync_service import _collect_jump_warnings
 
     df = pd.DataFrame(
         [
@@ -194,27 +157,10 @@ def test_filter_jump_anomalies_blocks_unadjusted_cliff():
             {"date": pd.Timestamp("2026-04-22"), "sec": "513660.SH", "close": 1.554},
         ]
     )
-    filtered, warnings = _filter_jump_anomalies(df, threshold=15.0)
-    assert len(filtered) == 2
+    result, warnings = _collect_jump_warnings(df, threshold=15.0)
+    assert len(result) == 3  # 行数不变，不剔除
     assert len(warnings) == 1
     assert warnings[0]["date"] == "2026-04-21"
-    assert filtered["close"].tolist() == [3.128, 1.554]
-
-
-def test_filter_jump_anomalies_keeps_adjusted_data():
-    """hfq data (with adj_factor) is trusted: real >15% moves are kept."""
-    from webapp.services.sync_service import _filter_jump_anomalies
-
-    df = pd.DataFrame(
-        [
-            {"date": pd.Timestamp("2024-09-30"), "sec": "159915.SZ", "close": 2.232, "adj_factor": 1.0},
-            {"date": pd.Timestamp("2024-10-08"), "sec": "159915.SZ", "close": 2.678, "adj_factor": 1.0},
-            {"date": pd.Timestamp("2024-10-09"), "sec": "159915.SZ", "close": 2.242, "adj_factor": 1.0},
-        ]
-    )
-    filtered, warnings = _filter_jump_anomalies(df, threshold=15.0)
-    assert len(filtered) == 3
-    assert warnings == []
 
 
 # ── BUG-02: 同步失败不得删除旧数据 ─────────────────────────────────────
@@ -433,10 +379,8 @@ def test_run_etf_sync_single_commit_per_symbol(db, monkeypatch):
     assert commits == [1], "成功替换应恰有一次 commit"
 
 
-def test_run_etf_sync_jump_reject_keeps_old_data(db, monkeypatch):
-    """校验剔除部分行：默认中止该标的替换并保留原数据。"""
-    _seed_old_bar(db, "A.SH", "2024-01-02", close=11.0)
-
+def test_run_etf_sync_jump_warns_and_writes(db, monkeypatch):
+    """跳变仅告警：同数据成功写入，warnings 出现，无 rejected 键。"""
     df = pd.DataFrame(
         [
             {"date": pd.Timestamp("2024-01-02"), "sec": "A.SH", "open": 10, "high": 10, "low": 10, "close": 10.0, "volume": 1, "amount": 1},
@@ -445,11 +389,70 @@ def test_run_etf_sync_jump_reject_keeps_old_data(db, monkeypatch):
     )
     task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df))
 
-    assert task.result["success_count"] == 0
-    assert task.result["rejected_count"] == 1
-    assert any("跳变校验" in r for r in task.result["rejected_codes"])
+    assert task.result["success_count"] == 1
+    assert task.result["warning_count"] == 1
+    assert "rejected_count" not in task.result
     rows = _sec_rows(db, "A.SH")
-    assert [r.close for r in rows] == [11.0]
+    assert [r.close for r in rows] == [10.0, 5.0]
+
+
+# ── 熔断：连续源级拦截快速止损 ─────────────────────────────────────────
+
+
+def test_circuit_breaker_skips_remaining_after_consecutive_blocks(db, monkeypatch):
+    """连续 3 只源级拦截 → 熔断：源恰被调 3 次，剩余标的记 skipped 未尝试。"""
+    calls = {"n": 0}
+
+    class _BlockedSource:
+        def get_etf_price_by_codes(self, sec_codes, start_date, end_date, period="daily"):
+            calls["n"] += 1
+            raise TencentSourceError("腾讯行情接口被 WAF 拦截(HTTP 501)")
+
+    task = _run_inline_sync(
+        db, monkeypatch, ["A.SH", "B.SH", "C.SH", "D.SH", "E.SH"], _BlockedSource()
+    )
+
+    assert task.status == SyncStatus.COMPLETED
+    assert task.result["failed_count"] == 3
+    assert task.result["skipped_count"] == 2
+    assert task.result["skipped_codes"] == ["D.SH", "E.SH"]
+    assert calls["n"] == 3
+    assert "熔断跳过" in task.message
+    skipped_rows = [r for r in task.result["results"] if r["status"] == "skipped"]
+    assert [r["sec_code"] for r in skipped_rows] == ["D.SH", "E.SH"]
+
+
+def test_circuit_breaker_counter_resets_after_success(db, monkeypatch):
+    """拦截×2 + 成功 + 拦截×2 → 计数清零不熔断，全部标的均被尝试。"""
+    outcomes = ["block", "block", "ok", "block", "block"]
+
+    class _FlakySource:
+        def get_etf_price_by_codes(self, sec_codes, start_date, end_date, period="daily"):
+            outcome = outcomes.pop(0)
+            if outcome == "block":
+                raise TencentSourceError("腾讯行情接口被 WAF 拦截(HTTP 501)")
+            return _new_rows_df(sec_codes[0], ["2024-01-02"])
+
+    task = _run_inline_sync(
+        db, monkeypatch, ["A.SH", "B.SH", "C.SH", "D.SH", "E.SH"], _FlakySource()
+    )
+
+    assert task.result["success_count"] == 1
+    assert task.result["failed_count"] == 4
+    assert task.result["skipped_count"] == 0
+
+
+def test_circuit_breaker_ignores_non_block_errors(db, monkeypatch):
+    """普通异常连续失败不熔断（计数仅对 TencentSourceError），全部尝试。"""
+
+    class _FailingSource:
+        def get_etf_price_by_codes(self, sec_codes, start_date, end_date, period="daily"):
+            raise RuntimeError("network down")
+
+    task = _run_inline_sync(db, monkeypatch, ["A.SH", "B.SH", "C.SH", "D.SH"], _FailingSource())
+
+    assert task.result["failed_count"] == 4
+    assert task.result["skipped_count"] == 0
 
 
 def test_run_etf_sync_success_replaces_range_outside_untouched(db, monkeypatch):
@@ -474,39 +477,3 @@ def test_run_etf_sync_success_replaces_range_outside_untouched(db, monkeypatch):
     # 区间外记录保留旧值
     outside = [r for r in rows if r.trade_date == pd.Timestamp("2023-12-29").date()]
     assert len(outside) == 1 and outside[0].close == 9.0
-
-
-# ── BUG-05: 禁止未复权行情混入后复权链路 ───────────────────────────────
-
-
-def test_write_etf_data_adj_factor_validation(db):
-    """非法/缺失 adj_factor 按显式缺失（NULL）处理；合法值原样保存。"""
-    from webapp.models.market_data import EtfDailyBar
-
-    from webapp.services.sync_service import _write_etf_data
-
-    base = {"sec": "A.SH", "open": 1, "high": 1, "low": 1, "close": 1.0, "volume": 1, "amount": 1}
-    values = [1.5, 0, -2.0, float("inf"), "abc", float("nan")]
-    df = pd.DataFrame(
-        [
-            {**base, "date": pd.Timestamp("2024-01-0%d" % (i + 2)), "adj_factor": v}
-            for i, v in enumerate(values)
-        ]
-    )
-    _write_etf_data(db, df)
-
-    rows = db.query(EtfDailyBar).order_by(EtfDailyBar.trade_date).all()
-    assert len(rows) == 6
-    assert rows[0].adj_factor == pytest.approx(1.5)
-    assert all(r.adj_factor is None for r in rows[1:])  # 0/负/inf/非法/NaN → NULL
-
-
-def test_run_etf_sync_warns_on_missing_adj_factor(db, monkeypatch):
-    """无 adj_factor 列的来源 → 写入成功但产生显式告警。"""
-    df = _new_rows_df("A.SH", ["2024-01-02"])  # _new_rows_df 不含 adj_factor 列
-
-    task = _run_inline_sync(db, monkeypatch, ["A.SH"], _FakeSource(df=df))
-
-    assert task.result["success_count"] == 1
-    reasons = [str(w.get("reason", "")) for w in task.result["warnings"]]
-    assert any("adj_factor" in r for r in reasons)

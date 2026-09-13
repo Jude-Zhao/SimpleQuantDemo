@@ -40,7 +40,7 @@ def db():
 def _fake_config(max_tasks: int = 2):
     return SimpleNamespace(
         sync=SimpleNamespace(max_concurrent_tasks=max_tasks, default_start_date="2021-01-04"),
-        datasource=SimpleNamespace(jump_threshold=15.0),
+        datasource=SimpleNamespace(jump_threshold=45.0, source_break_threshold=3),
     )
 
 

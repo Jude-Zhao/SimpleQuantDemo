@@ -21,7 +21,6 @@ class EtfDailyBar(Base):
     close = Column(Float)
     volume = Column(Float)
     amount = Column(Float)
-    adj_factor = Column(Float)  # 后复权累计因子 close/raw_close，用于还原真实市价
     source = Column(String)  # 数据来源，当前为 akshare（腾讯 fqkline hfq）
 
     __table_args__ = (

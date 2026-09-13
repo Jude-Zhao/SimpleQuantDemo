@@ -9,6 +9,10 @@ datasource:
   primary: "akshare"
   cache_enabled: true
   cache_days_daily: 365
+  jump_threshold: 45.0
+  tencent_min_interval: 0.75
+  tencent_max_interval: 1.25
+  source_break_threshold: 3
 
 sync:
   default_start_date: "2021-01-04"
