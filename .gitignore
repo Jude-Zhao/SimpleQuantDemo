@@ -40,6 +40,10 @@ data_example/
 research/factors/etf15_*.py
 
 research/output/
+
+# 因子挖掘产出目录（因子挖掘+日期命名，仅本地保留不提交）
+research/因子挖掘*/
+research/波动因子挖掘2026.08.23/
 trading/output/
 data/raw/
 data/processed/
