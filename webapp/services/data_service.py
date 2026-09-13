@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core.data.cached_source import CachedDataSource
@@ -118,6 +119,18 @@ def _write_daily_cache(db: Session, df: pd.DataFrame) -> None:
     db.commit()
 
 
+def _cache_date_bounds(db: Session):
+    """全库（etf_daily_bar 全表跨标的）最新交易日查询，供缓存覆盖判定把请
+    求 end 截断到已知最新交易日（见 CachedDataSource._split_by_coverage）。
+    start 侧以缓存帧内最小日期为准，无需注入。"""
+
+    def _latest() -> pd.Timestamp | None:
+        max_date = db.query(func.max(EtfDailyBar.trade_date)).scalar()
+        return pd.Timestamp(max_date) if max_date is not None else None
+
+    return _latest
+
+
 def get_cached_source(db: Session) -> CachedDataSource:
     """Get a CachedDataSource instance backed by SQLite."""
     primary = _get_primary_source()
@@ -129,6 +142,7 @@ def get_cached_source(db: Session) -> CachedDataSource:
         primary_source=primary,
         cache_reader=_cache_reader(db),
         cache_writer=_cache_writer(db),
+        cache_latest_date=_cache_date_bounds(db),
     )
 
 

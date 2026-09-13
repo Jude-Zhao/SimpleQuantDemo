@@ -40,10 +40,16 @@ class CachedDataSource(DataSource):
         primary_source: DataSource,
         cache_reader: Callable | None = None,
         cache_writer: Callable | None = None,
+        cache_latest_date: Callable[[], pd.Timestamp | None] | None = None,
     ) -> None:
         self.primary = primary_source
         self.cache_reader = cache_reader
         self.cache_writer = cache_writer
+        # 全库（跨所有标的）最新交易日查询，供覆盖判定把请求 end 截断到已
+        # 知最新交易日（见 _split_by_coverage）；未注入时退化为用本次缓存
+        # 帧最大日期近似。start 侧无需注入：窗口内首交易日以缓存帧最小日
+        # 期为准（reader 已按 date >= start 过滤）。
+        self.cache_latest_date = cache_latest_date
         # 上一次请求中源侧仍无法补齐的证券（显式不完整状态；完整时为空）
         self.incomplete_codes: list[str] = []
 
@@ -138,8 +144,16 @@ class CachedDataSource(DataSource):
         present = set(df["sec"].unique())
         return [c for c in sec_codes if c not in present]
 
-    @staticmethod
+    def _cache_latest_known_date(self, cached: pd.DataFrame) -> pd.Timestamp | None:
+        """全库已知最新交易日：优先注入查询，否则用本次缓存帧最大日期近似。"""
+        if self.cache_latest_date is not None:
+            return self.cache_latest_date()
+        if cached.empty:
+            return None
+        return pd.Timestamp(cached["date"].max())
+
     def _split_by_coverage(
+        self,
         cached: pd.DataFrame,
         sec_codes: list[str],
         start_date: str | pd.Timestamp | None,
@@ -155,6 +169,20 @@ class CachedDataSource(DataSource):
           交易日（洞）无法由首尾判断发现——该完整性由写入侧“单事务
           完整区间替换”（BUG-02）保证；判断不按自然日数量推断交易日，
           正常周末/节假日不会误报为缺口。
+        - **start/end 截断（方案 A，2026-09-13）**：覆盖判断依据“数据事
+          实”而非自然日历——请求边界落在已知交易日之外时，截断到数据中
+          实际存在的边界再比较，否则周末/节假日/盘后未同步的请求会每次
+          触发必然空手的全量重拉：
+          - end 侧：effective_end = min(end, global_max)。global_max 为全
+            库已知最新交易日（注入查询；退化为缓存帧最大日期）。全库没有
+            任何标的有晚于它的数据，即不存在已知的更新交易日。新交易日由
+            显式同步写入缓存后 global_max 前移，落后于它的标的才触发补拉。
+          - start 侧：effective_start = max(start, frame_min)。frame_min 为
+            缓存帧（reader 已按 date >= start 过滤）最小日期，即窗口内已
+            知首交易日——请求 start 落在节假日（如 2024-01-01 元旦，首交
+            易日 01-02）时，若仍要求缓存从 start 起有数据，同样每次必然
+            重拉。窗口早于帧最小日期的数据不属于本窗口，不能作为覆盖证据。
+          两侧未截断的退化形式均保守：只会少判已知交易日，不会多判。
         - 周期维度由 cache_reader 按 period 过滤（daily/minute 分表），
           日频与分钟缓存不会互混。
         """
@@ -169,6 +197,16 @@ class CachedDataSource(DataSource):
 
         start = pd.Timestamp(start_date) if start_date is not None else None
         end = pd.Timestamp(end_date) if end_date is not None else None
+        effective_start = start
+        effective_end = end
+        if start is not None and not cached.empty:
+            frame_min = pd.Timestamp(cached["date"].min())
+            if start < frame_min:
+                effective_start = frame_min
+        if end is not None:
+            global_max = self._cache_latest_known_date(cached)
+            if global_max is not None and end > global_max:
+                effective_end = global_max
         covered: list[str] = []
         uncovered: list[str] = []
         for c in sec_codes:
@@ -178,7 +216,9 @@ class CachedDataSource(DataSource):
                 continue
             sec_min = pd.Timestamp(sub["date"].min())
             sec_max = pd.Timestamp(sub["date"].max())
-            if (start is None or sec_min <= start) and (end is None or sec_max >= end):
+            if (effective_start is None or sec_min <= effective_start) and (
+                effective_end is None or sec_max >= effective_end
+            ):
                 covered.append(c)
             else:
                 uncovered.append(c)

@@ -180,7 +180,8 @@ def test_partial_cache_miss():
 
 
 def test_partial_date_hit_triggers_fetch():
-    """直接复现：请求 01-05~01-06、缓存只有 01-05 → 触发源获取并返回两日。"""
+    """BUG-04：已知最新交易日范围内（global_max=01-08，来自其他标的），
+    缓存只到 01-05 的标的必须触发源获取补齐。"""
     dates = pd.date_range("2024-01-04", periods=4, freq="B")  # 01-04..01-09
     rows = []
     for d in dates:
@@ -195,7 +196,11 @@ def test_partial_date_hit_triggers_fetch():
     def reader(codes, start, end, period):
         return cached_data.copy()
 
-    cached = CachedDataSource(primary_source=primary, cache_reader=reader)
+    cached = CachedDataSource(
+        primary_source=primary,
+        cache_reader=reader,
+        cache_latest_date=lambda: pd.Timestamp("2024-01-08"),  # 其他标的已到 01-08
+    )
 
     result = cached.get_etf_price_by_codes(
         ["510300.SH"], start_date="2024-01-05", end_date="2024-01-08"
@@ -295,7 +300,11 @@ def test_merge_no_duplicate_keys():
     def reader(codes, start, end, period):
         return cached_data.copy()
 
-    cached = CachedDataSource(primary_source=primary, cache_reader=reader)
+    cached = CachedDataSource(
+        primary_source=primary,
+        cache_reader=reader,
+        cache_latest_date=lambda: pd.Timestamp("2024-01-03"),  # 01-03 为已知交易日
+    )
 
     result = cached.get_etf_price_by_codes(
         ["510300.SH"], start_date="2024-01-02", end_date="2024-01-03"
@@ -321,6 +330,117 @@ def test_unbounded_request_hits_cache_without_fetch():
 
     assert primary.fetch_count == 0
     assert len(result) == len(cached_data)
+
+
+# ── 方案 A：end 截断到全库已知最新交易日 ───────────────────────────────
+
+
+def test_end_beyond_global_max_no_refetch():
+    """回归：请求 end（如周末/未同步的今天）超过全库已知最新交易日时，
+    不得触发必然空手的全量重拉（此前每次页面加载烧 60 个请求）。"""
+    data = _make_sample_data()  # 两证券，2024-01-02..01-08
+    primary = _FakeDataSource(data)
+    cached_data = data.copy()
+
+    def reader(codes, start, end, period):
+        return cached_data.copy()
+
+    cached = CachedDataSource(primary_source=primary, cache_reader=reader)
+
+    # 未注入 global_max → 退化为缓存帧最大日期 01-08；请求 end=01-10 被截断
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH", "510500.SH"], start_date="2024-01-02", end_date="2024-01-10"
+    )
+
+    assert primary.fetch_count == 0
+    assert len(result) == 10  # 全部缓存行原样返回
+
+
+def test_start_before_first_trading_day_no_refetch():
+    """回归：请求 start 落在节假日（早于窗口内首交易日）时，以缓存帧内
+    已知首交易日截断，不得触发必然空手的全量重拉（首页 65s 的元凶之一）。"""
+    data = _make_sample_data()  # 两证券，2024-01-02..01-08
+    primary = _FakeDataSource(data)
+    cached_data = data.copy()
+
+    def reader(codes, start, end, period):
+        return cached_data.copy()
+
+    cached = CachedDataSource(primary_source=primary, cache_reader=reader)
+
+    # start=01-01（元旦假日，非交易日），首交易日 01-02
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH", "510500.SH"], start_date="2024-01-01", end_date="2024-01-08"
+    )
+
+    assert primary.fetch_count == 0
+    assert len(result) == 10
+
+
+def test_injected_global_max_newer_triggers_fetch():
+    """注入的全库最新交易日比请求标的缓存更新 → 该标的判未覆盖并补拉。"""
+    dates = pd.date_range("2024-01-02", periods=5, freq="B")  # 01-02..01-08
+    rows = [
+        {"date": d, "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 1.0, "volume": 1, "amount": 1}
+        for d in dates
+    ]
+    primary = _FakeDataSource(pd.DataFrame(rows))
+
+    cached_data = rows[:4]  # 缓存只到 01-07
+    cached_data = pd.DataFrame(cached_data)
+
+    def reader(codes, start, end, period):
+        return cached_data.copy()
+
+    cached = CachedDataSource(
+        primary_source=primary,
+        cache_reader=reader,
+        cache_latest_date=lambda: pd.Timestamp("2024-01-08"),  # 全库已到 01-08
+    )
+
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH"], start_date="2024-01-02", end_date="2024-01-08"
+    )
+
+    assert primary.fetch_count == 1
+    assert result["date"].max() == pd.Timestamp("2024-01-08")  # 缺口已补齐
+
+
+def test_injected_global_max_partial_fetch():
+    """global_max 前移后只有落后标的被补拉，跟上的标的零请求。"""
+    dates = pd.date_range("2024-01-02", periods=5, freq="B")  # 01-02..01-08
+    rows = []
+    for d in dates:
+        rows.append({"date": d, "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 1.0, "volume": 1, "amount": 1})
+    for d in dates[:3]:  # B 只到 01-04（如停牌/漏同步）
+        rows.append({"date": d, "sec": "510500.SH", "open": 1, "high": 1, "low": 1, "close": 2.0, "volume": 1, "amount": 1})
+    all_data = pd.DataFrame(rows)
+
+    write_calls = []
+
+    def reader(codes, start, end, period):
+        return all_data.copy()
+
+    def writer(df, period):
+        write_calls.append(df)
+
+    primary = _FakeDataSource(all_data)
+    cached = CachedDataSource(
+        primary_source=primary,
+        cache_reader=reader,
+        cache_writer=writer,
+        cache_latest_date=lambda: pd.Timestamp("2024-01-08"),
+    )
+
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH", "510500.SH"], start_date="2024-01-02", end_date="2024-01-08"
+    )
+
+    assert primary.fetch_count == 1  # 一次批量补拉
+    assert len(write_calls) == 1
+    assert set(write_calls[0]["sec"].unique()) == {"510500.SH"}  # 只补 B
+    assert cached.incomplete_codes == []  # B 源侧有数据（只是更旧），不算缺失
+    assert len(result) == 8  # A 5 行 + B 3 行
 
 
 # ── 审核修复 D2/D3：非法周期入口拒绝、源异常与补齐失败显式报告 ──────────
