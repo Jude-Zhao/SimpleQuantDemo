@@ -1,0 +1,212 @@
+{
+  "cache_start": {
+    "reproduced": true,
+    "evidence": {
+      "requested_start": "2021-01-04",
+      "actual_start": "2024-06-03",
+      "source_calls": 0
+    }
+  },
+  "partial_replace": {
+    "reproduced": true,
+    "evidence": {
+      "rows_before": 3,
+      "source_rows": 1,
+      "rows_after": 1
+    }
+  },
+  "cache_revision": {
+    "reproduced": true,
+    "evidence": {
+      "fresh": [
+        20.0,
+        21.0,
+        22.0
+      ],
+      "persisted": [
+        10.0,
+        11.0,
+        22.0
+      ]
+    }
+  },
+  "sync_boundaries": {
+    "reproduced": true,
+    "evidence": {
+      "etf_shared_end_day": "both accepted",
+      "macro_same_month": "both accepted"
+    }
+  },
+  "hfq_fallback": {
+    "reproduced": true,
+    "evidence": {
+      "requested": "hfq",
+      "only_response_key": "day",
+      "accepted_rows": 1
+    }
+  },
+  "missing_factor_observations": {
+    "reproduced": true,
+    "evidence": {
+      "latest_raw_price": null,
+      "mfi": 1.0,
+      "drawdown": 0.0
+    }
+  },
+  "drawdown_window": {
+    "reproduced": true,
+    "evidence": {
+      "last_120_prices": "all 100",
+      "older_peak": 200,
+      "reported": -0.5,
+      "rolling_window_drawdown": 0.0
+    }
+  },
+  "overlapping_returns": {
+    "reproduced": true,
+    "evidence": {
+      "ten_overlapping_5d_windows": 0.6446318218438838,
+      "underlying_14_daily_intervals": 0.14947421323762256,
+      "two_nonoverlapping_5d_windows": 0.10462212541120453
+    }
+  },
+  "nonfinite_api_stats": {
+    "reproduced": true,
+    "evidence": {
+      "constant_correlation_json_error": "ValueError: Out of range float values are not JSON compliant: nan",
+      "one_ic_observation_std": "NaN",
+      "one_ic_observation_icir": "nan"
+    }
+  },
+  "default_strategy_params": {
+    "reproduced": true,
+    "evidence": {
+      "omitted_params": {},
+      "error": "ValueError: class_weights must contain at least one positive weight.",
+      "metadata_has_defaults": true
+    }
+  },
+  "disabled_category_issues": {
+    "reproduced": true,
+    "evidence": {
+      "selected_weight": 1.0,
+      "eligible_count": 1,
+      "same_security_exclusion": {
+        "sec": "A",
+        "category": "disabled",
+        "factor": "unused",
+        "instance_index": 0,
+        "params": {},
+        "reason": "missing"
+      }
+    }
+  },
+  "beta_zero": {
+    "reproduced": true,
+    "evidence": {
+      "beta_accepted": 0,
+      "input_missing_score": null,
+      "output_score": 1.0
+    }
+  },
+  "thread_start_failure": {
+    "reproduced": true,
+    "evidence": {
+      "launch_error": "RuntimeError: simulated cannot start thread",
+      "stranded_pending": 1,
+      "next_request": "已有策略任务运行中，请稍候再试"
+    }
+  },
+  "invalid_rule_persists": {
+    "reproduced": true,
+    "evidence": {
+      "accepted_update": {
+        "config": null
+      },
+      "later_classification_error": "AttributeError: 'NoneType' object has no attribute 'get'"
+    }
+  },
+  "macro_alignment": {
+    "reproduced": true,
+    "evidence": {
+      "friday": 1,
+      "sunday_published": 2,
+      "monday_aligned": 1.0
+    }
+  },
+  "icir_lookahead": {
+    "reproduced": true,
+    "evidence": {
+      "signal_date": "2024-01-10",
+      "changed_future_date": "2024-01-15",
+      "max_signal_change": 1.399415323301227
+    }
+  },
+  "research_missing_dates": {
+    "reproduced": true,
+    "evidence": {
+      "expected_execution": "2024-01-03",
+      "actual_execution": "2024-01-04",
+      "missing_close_rows": 1
+    }
+  },
+  "infinite_initial_cash": {
+    "reproduced": true,
+    "evidence": {
+      "accepted_initial_cash": "Infinity",
+      "equity": [
+        "NaN",
+        "NaN"
+      ],
+      "daily_returns": [
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "dashboard_return_window": {
+    "reproduced": true,
+    "evidence": {
+      "days_1_result": [],
+      "days_2_reported": 0.10000000000000009,
+      "days_2_expected": 0.21
+    }
+  },
+  "dashboard_stale_cache": {
+    "reproduced": true,
+    "evidence": {
+      "historical_price_changed": true,
+      "date_unchanged": true,
+      "recomputed": false
+    }
+  },
+  "research_ic_schedule": {
+    "reproduced": true,
+    "evidence": {
+      "first_ic_date": "2024-01-09",
+      "first_backtest_decision": "2024-01-04"
+    }
+  },
+  "category_scoring_disagreement": {
+    "reproduced": true,
+    "evidence": {
+      "strategy_category_score": null,
+      "dashboard_category_score": 0.01
+    }
+  },
+  "joinquant_cash_target": {
+    "reproduced": true,
+    "evidence": {
+      "faa": {
+        "current_A_value": 900,
+        "desired_A_value": 1000,
+        "submitted_A_target": 199.0
+      },
+      "eaa": {
+        "current_A_value": 900,
+        "desired_A_value": 1000,
+        "submitted_A_target": 199.0
+      }
+    }
+  }
+}

@@ -1,0 +1,77 @@
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 56%]
+........FFF............................................................. [ 75%]
+........................................................................ [ 94%]
+.....................                                                    [100%]
+================================== FAILURES ===================================
+___________________ test_wheel_contains_required_resources ____________________
+tests\test_package_resources.py:44: in test_wheel_contains_required_resources
+    wheel = _latest_wheel()
+            ^^^^^^^^^^^^^^^
+tests\test_package_resources.py:37: in _latest_wheel
+    assert wheels, (
+E   AssertionError: δ�ҵ� wheel ���������������: $PY -m build --wheel
+E   assert []
+____________________ test_wheel_excludes_database_and_env _____________________
+tests\test_package_resources.py:52: in test_wheel_excludes_database_and_env
+    wheel = _latest_wheel()
+            ^^^^^^^^^^^^^^^
+tests\test_package_resources.py:37: in _latest_wheel
+    assert wheels, (
+E   AssertionError: δ�ҵ� wheel ���������������: $PY -m build --wheel
+E   assert []
+_____________________ test_wheel_excludes_tests_and_docs ______________________
+tests\test_package_resources.py:60: in test_wheel_excludes_tests_and_docs
+    wheel = _latest_wheel()
+            ^^^^^^^^^^^^^^^
+tests\test_package_resources.py:37: in _latest_wheel
+    assert wheels, (
+E   AssertionError: δ�ҵ� wheel ���������������: $PY -m build --wheel
+E   assert []
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\Project\SimpleQuantDemo\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\Project\SimpleQuantDemo\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_analysis_ic.py: 1 warning
+tests/test_backtest.py: 2 warnings
+tests/test_evaluate.py: 4 warnings
+tests/test_factor_service.py: 1 warning
+tests/test_optimization.py: 2 warnings
+tests/test_research_main.py: 3 warnings
+tests/test_synthesis.py: 2 warnings
+tests/test_webapp_e2e.py: 1 warning
+  D:\Project\SimpleQuantDemo\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:3036: RuntimeWarning: invalid value encountered in divide
+    c /= stddev[:, None]
+
+tests/test_analysis_ic.py: 1 warning
+tests/test_backtest.py: 2 warnings
+tests/test_evaluate.py: 4 warnings
+tests/test_factor_service.py: 1 warning
+tests/test_optimization.py: 2 warnings
+tests/test_research_main.py: 3 warnings
+tests/test_synthesis.py: 2 warnings
+tests/test_webapp_e2e.py: 1 warning
+  D:\Project\SimpleQuantDemo\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:3037: RuntimeWarning: invalid value encountered in divide
+    c /= stddev[None, :]
+
+tests/test_analysis_ic.py: 1 warning
+tests/test_evaluate.py: 4 warnings
+tests/test_factor_service.py: 1 warning
+tests/test_research_main.py: 3 warnings
+tests/test_webapp_api_dashboard.py: 4 warnings
+tests/test_webapp_e2e.py: 1 warning
+  D:\Project\SimpleQuantDemo\.venv\Lib\site-packages\pandas\core\nanops.py:1673: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+    return spearmanr(a, b)[0]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_package_resources.py::test_wheel_contains_required_resources
+FAILED tests/test_package_resources.py::test_wheel_excludes_database_and_env
+FAILED tests/test_package_resources.py::test_wheel_excludes_tests_and_docs - ...
+3 failed, 378 passed, 48 warnings in 74.51s (0:01:14)
