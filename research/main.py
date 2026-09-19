@@ -167,6 +167,24 @@ def _build_composite(
     return faa_composite(detail.scores, class_weights), detail.issues
 
 
+def _slice_backtest_window(
+    close: pd.DataFrame,
+    composite: pd.DataFrame,
+    eval_start: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """F07: 裁剪回测窗口——保留 eval_start 之后全部行情日期。
+
+    旧实现 ``close.index.intersection(composite.index)`` 会删除合成矩阵缺行
+    的真实价格日，把 T+1 成交推迟一天、净值序列少一日（与调用处注释
+    "never intersected with valid factor dates" 相悖）。改为分数 reindex 到
+    行情索引：缺信号日变 NaN，由 build_target_weights 的资格逻辑记
+    skipped_insufficient，仅跳过新目标。
+    """
+    close = close.loc[close.index >= eval_start].sort_index()
+    scores = composite.reindex(index=close.index, columns=close.columns).sort_index()
+    return close, scores
+
+
 def run_research(config: ResearchConfig) -> ResearchRunResult:
     """Run the research pipeline."""
     data_source = SqliteDataSource(db_path=config.db_path)
@@ -192,11 +210,7 @@ def run_research(config: ResearchConfig) -> ResearchRunResult:
     # Backtest window: clip to the evaluation start date; trading dates are the
     # window's date union (never intersected with valid factor dates).
     close = pivot_price_field(price_data, field="close", universe=universe)
-    close = close.loc[
-        close.index.intersection(composite.index), composite.columns
-    ].sort_index()
-    close = close.loc[close.index >= eval_start]
-    scores = composite.loc[close.index, close.columns].sort_index()
+    close, scores = _slice_backtest_window(close, composite, eval_start)
 
     bt_config = BacktestConfig(
         rebalance_freq=config.rebalance_freq,

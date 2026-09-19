@@ -102,7 +102,9 @@ def _backtest(close, composite, weight_mode) -> tuple:
 
     不保留任何独立收益公式——净值/费用/换手全部来自 execute_backtest。
     """
-    scores = composite.loc[close.index, close.columns].sort_index()
+    # F07: reindex 而非 .loc——扩展因子缺信号日不再 KeyError，缺行变 NaN
+    # 交由 build_target_weights 资格逻辑跳过新目标
+    scores = composite.reindex(index=close.index, columns=close.columns).sort_index()
     cfg = BacktestConfig(
         rebalance_freq=REBALANCE_FREQ,
         top_n=TOP_N,

@@ -5,10 +5,13 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
+from core.backtest import BacktestConfig
+from core.backtest.targets import build_target_weights
 from research.config import default_research_config
-from research.main import calculate_backtest_summary, run_research
+from research.main import _slice_backtest_window, calculate_backtest_summary, run_research
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -93,3 +96,89 @@ def test_research_cli_runs(tmp_path: Path, test_db_path: Path) -> None:
 
     assert "Research pipeline completed." in completed.stdout
     assert (tmp_path / "summary.csv").exists()
+
+
+# ── F07: 回测窗口保留全部行情日期（分数 reindex，而非 intersection 删日）──
+
+
+def _close_frame(dates: list[str], secs: list[str]) -> pd.DataFrame:
+    idx = pd.DatetimeIndex(dates)
+    values = 10.0 + np.arange(len(idx), dtype=float)[:, None] * 0.1
+    return pd.DataFrame(
+        np.repeat(values, len(secs), axis=1),
+        index=idx,
+        columns=list(secs),
+    )
+
+
+def test_missing_signal_day_keeps_price_date():
+    """F07: 合成矩阵缺行时不得删除真实价格日——close 全保留，缺日分数为 NaN 行。
+
+    旧实现 close.index.intersection(composite.index) 会丢掉 01-03 行情，
+    把 T+1 成交从 01-03 推迟到 01-04，净值序列少一日。
+    """
+    dates = ["2024-01-02", "2024-01-03", "2024-01-04"]
+    close = _close_frame(dates, ["A", "B"])
+    composite = pd.DataFrame(
+        {"A": [1.0, 2.0], "B": [0.5, 0.1]},
+        index=pd.DatetimeIndex(["2024-01-02", "2024-01-04"]),  # 插件因子缺 01-03 行
+    )
+
+    clipped, scores = _slice_backtest_window(close, composite, pd.Timestamp("2024-01-02"))
+
+    assert list(clipped.index) == list(pd.DatetimeIndex(dates))
+    assert clipped.loc["2024-01-03", "A"] == close.loc["2024-01-03", "A"]
+    assert np.isnan(scores.loc["2024-01-03"]).all()
+    assert scores.loc["2024-01-02", "A"] == 1.0
+    assert scores.loc["2024-01-04", "B"] == 0.1
+    assert list(clipped.columns) == ["A", "B"]
+    assert list(scores.columns) == ["A", "B"]
+
+
+def test_eval_start_clips_window():
+    """eval_start 仍生效：更早的行情日期不进入回测窗口。"""
+    close = _close_frame(["2023-12-29", "2024-01-02", "2024-01-03"], ["A"])
+    composite = pd.DataFrame({"A": [9.0, 1.0, 2.0]}, index=close.index)
+
+    clipped, scores = _slice_backtest_window(close, composite, pd.Timestamp("2024-01-02"))
+
+    assert list(clipped.index) == list(pd.DatetimeIndex(["2024-01-02", "2024-01-03"]))
+    assert list(scores.index) == list(clipped.index)
+
+
+def test_factor_dates_do_not_change_execution_days():
+    """F07 验收：因子缺行不改变同一价格输入的调仓决策日（T+1 执行日）；
+    缺信号决策仅跳过新目标，其余决策日目标逐值不变。"""
+    dates = ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"]
+    close = _close_frame(dates, ["A", "B", "C"])
+    full = pd.DataFrame(
+        {
+            "A": [3.0, 2.0, 1.0, 3.0, 2.0, 1.0],
+            "B": [2.0, 3.0, 2.0, 1.0, 3.0, 2.0],
+            "C": [1.0, 1.0, 3.0, 2.0, 1.0, 3.0],
+        },
+        index=close.index,
+    )
+    partial = full.drop(index=pd.Timestamp("2024-01-02"))  # 插件因子缺首个决策日
+
+    cfg = BacktestConfig(
+        rebalance_freq="5d",
+        top_n=2,
+        max_weight=1.0,
+        min_weight=0.0,
+        weight_mode="equal",
+    )
+    plan_full = build_target_weights(full, close.index, cfg)
+    plan_partial = build_target_weights(partial, close.index, cfg)
+
+    # 决策日只由行情日期决定（6 日按 5 日一块 → 首日与第 6 日）
+    assert len(plan_full.rebalance_dates) == 2
+    assert list(plan_partial.rebalance_dates) == list(plan_full.rebalance_dates)
+
+    first = plan_full.rebalance_dates[0]
+    entry = next(e for e in plan_partial.decision_log if e["decision_date"] == first)
+    assert entry["status"] == "skipped_insufficient"
+    assert entry["eligible_count"] == 0
+    assert first not in plan_partial.target_weights.index
+    for d in plan_full.rebalance_dates[1:]:
+        assert plan_partial.target_weights.loc[d].equals(plan_full.target_weights.loc[d])
