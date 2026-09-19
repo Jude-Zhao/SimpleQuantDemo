@@ -10,11 +10,12 @@ import logging
 
 import pandas as pd
 from sqlalchemy import func
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from core.data.cached_source import CachedDataSource
 from webapp.config import get_config
-from webapp.models.market_data import EtfDailyBar
+from webapp.models.market_data import EtfCacheCoverage, EtfDailyBar
 
 logger = logging.getLogger(__name__)
 
@@ -94,35 +95,140 @@ def _cache_writer(db: Session):
 
 
 def _write_daily_cache(db: Session, df: pd.DataFrame) -> None:
+    upsert_daily_bars(db, df)
+
+
+# 单条 upsert 语句携带的行数上限：首页级补拉约 30 标的 × 250 日 ≈ 7500 行，
+# 分块避免单条语句过大；SQLite 变量上限（999×早期版本）远高于每块列数。
+_UPSERT_CHUNK = 1000
+
+
+def upsert_daily_bars(db: Session, df: pd.DataFrame, commit: bool = True) -> int:
+    """按 (sec_code, trade_date) 原子 upsert 日线缓存，返回收到的行数。
+
+    F01/F04 最小修复：收到的行覆盖同键旧值（源端修订可入库，两次读取
+    结果一致）；响应遗漏的日期不删除、旧行保留。先查后插的旧实现会让
+    修订值只进返回不进库，并发双写还会触发唯一键竞争。
+    """
+    if df is None or df.empty:
+        return 0
+
+    rows = []
     for _, row in df.iterrows():
         sec = row["sec"]
         date_val = pd.to_datetime(row["date"]).date()
-        bar_id = f"{sec}_{date_val.isoformat()}"
-
-        existing = db.query(EtfDailyBar).filter_by(id=bar_id).first()
-        if existing:
-            continue
-
-        bar = EtfDailyBar(
-            id=bar_id,
-            sec_code=sec,
-            trade_date=date_val,
-            open=float(row.get("open", 0)),
-            high=float(row.get("high", 0)),
-            low=float(row.get("low", 0)),
-            close=float(row.get("close", 0)),
-            volume=float(row.get("volume", 0)),
-            amount=float(row.get("amount", 0)),
-            source=row.get("source", ""),
+        rows.append(
+            {
+                "id": f"{sec}_{date_val.isoformat()}",
+                "sec_code": sec,
+                "trade_date": date_val,
+                "open": float(row.get("open", 0)),
+                "high": float(row.get("high", 0)),
+                "low": float(row.get("low", 0)),
+                "close": float(row.get("close", 0)),
+                "volume": float(row.get("volume", 0)),
+                "amount": float(row.get("amount", 0)),
+                "source": row.get("source", ""),
+            }
         )
-        db.add(bar)
-    db.commit()
+
+    count = 0
+    for i in range(0, len(rows), _UPSERT_CHUNK):
+        chunk = rows[i : i + _UPSERT_CHUNK]
+        stmt = sqlite_insert(EtfDailyBar).values(chunk)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[EtfDailyBar.sec_code, EtfDailyBar.trade_date],
+            set_={
+                "open": stmt.excluded.open,
+                "high": stmt.excluded.high,
+                "low": stmt.excluded.low,
+                "close": stmt.excluded.close,
+                "volume": stmt.excluded.volume,
+                "amount": stmt.excluded.amount,
+                "source": stmt.excluded.source,
+            },
+        )
+        db.execute(stmt)
+        count += len(chunk)
+    if commit:
+        db.commit()
+    return count
+
+
+def upsert_coverage_rows(
+    db: Session,
+    sec_codes: list[str],
+    start_date: str | pd.Timestamp | None,
+    end_date: str | pd.Timestamp | None,
+    commit: bool = True,
+) -> None:
+    """记录源覆盖元数据：源已被成功请求 [start, end] 且返回内容已入缓存。
+
+    fetched_from 取历史最小、fetched_to 取历史最大（单调扩张）；start 为
+    None 的无界请求不产生 start 侧覆盖语义，跳过。``commit=False`` 留待
+    调用方与行情写入同一事务提交（同步路径保持单 commit 不变量）。
+    """
+    if not sec_codes or start_date is None:
+        return
+    start = pd.to_datetime(start_date).date()
+    end = pd.to_datetime(end_date).date() if end_date else start
+    existing = {
+        r.sec_code: r
+        for r in db.query(EtfCacheCoverage)
+        .filter(EtfCacheCoverage.sec_code.in_(list(sec_codes)))
+        .all()
+    }
+    for sec in sec_codes:
+        row = existing.get(sec)
+        if row is None:
+            db.add(
+                EtfCacheCoverage(sec_code=sec, fetched_from=start, fetched_to=end)
+            )
+            continue
+        if start < row.fetched_from:
+            row.fetched_from = start
+        if end > row.fetched_to:
+            row.fetched_to = end
+    if commit:
+        db.commit()
+
+
+def _coverage_reader(db: Session):
+    """Create a coverage reader function bound to a DB session.
+
+    返回 start 侧已有源覆盖证明的证券集合（fetched_from <= 请求 start）。
+    """
+
+    def reader(sec_codes: list[str], start_date, end_date, period: str = "daily") -> set[str]:
+        if not sec_codes or start_date is None:
+            return set()
+        start = pd.to_datetime(start_date).date()
+        rows = (
+            db.query(EtfCacheCoverage.sec_code)
+            .filter(
+                EtfCacheCoverage.sec_code.in_(sec_codes),
+                EtfCacheCoverage.fetched_from <= start,
+            )
+            .all()
+        )
+        return {r.sec_code for r in rows}
+
+    return reader
+
+
+def _coverage_writer(db: Session):
+    """Create a coverage writer function bound to a DB session."""
+
+    def writer(sec_codes: list[str], start_date, end_date, period: str = "daily") -> None:
+        upsert_coverage_rows(db, sec_codes, start_date, end_date)
+
+    return writer
 
 
 def _cache_date_bounds(db: Session):
     """全库（etf_daily_bar 全表跨标的）最新交易日查询，供缓存覆盖判定把请
     求 end 截断到已知最新交易日（见 CachedDataSource._split_by_coverage）。
-    start 侧以缓存帧内最小日期为准，无需注入。"""
+    start 侧覆盖由 EtfCacheCoverage 元数据判定（见 _coverage_reader）。"""
 
     def _latest() -> pd.Timestamp | None:
         max_date = db.query(func.max(EtfDailyBar.trade_date)).scalar()
@@ -143,6 +249,8 @@ def get_cached_source(db: Session) -> CachedDataSource:
         cache_reader=_cache_reader(db),
         cache_writer=_cache_writer(db),
         cache_latest_date=_cache_date_bounds(db),
+        coverage_reader=_coverage_reader(db),
+        coverage_writer=_coverage_writer(db),
     )
 
 

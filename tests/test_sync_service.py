@@ -477,3 +477,81 @@ def test_run_etf_sync_success_replaces_range_outside_untouched(db, monkeypatch):
     # 区间外记录保留旧值
     outside = [r for r in rows if r.trade_date == pd.Timestamp("2023-12-29").date()]
     assert len(outside) == 1 and outside[0].close == 9.0
+
+
+# ── F01: 非空但不完整的源响应不得删除旧数据 ───────────────────────────
+
+
+def test_partial_source_response_keeps_old_rows(db, monkeypatch):
+    """F01：源只返回区间中段 1 天时，其余旧日期必须原样保留，中段更新。"""
+    _seed_old_bar(db, "A.SH", "2024-01-02", close=10.0)
+    _seed_old_bar(db, "A.SH", "2024-01-03", close=10.0)
+    _seed_old_bar(db, "A.SH", "2024-01-04", close=10.0)
+
+    df = _new_rows_df("A.SH", ["2024-01-03"], close=20.0)
+    task = _run_inline_sync(
+        db, monkeypatch, ["A.SH"], _FakeSource(df=df),
+        start="2024-01-01", end="2024-01-31",
+    )
+
+    assert task.result["success_count"] == 1
+    rows = _sec_rows(db, "A.SH")
+    assert [(str(r.trade_date), r.close) for r in rows] == [
+        ("2024-01-02", 10.0),  # 源遗漏日保留旧行
+        ("2024-01-03", 20.0),  # 收到的新值覆盖同键旧值
+        ("2024-01-04", 10.0),  # 源遗漏日保留旧行
+    ]
+
+
+def test_replace_etf_range_warns_on_omitted_dates(db, caplog):
+    """F01：源响应遗漏区间内已有日期时告警（旧行保留，显式可观测）。"""
+    import logging
+
+    from webapp.services.sync_service import _replace_etf_range
+
+    _seed_old_bar(db, "A.SH", "2024-01-02", close=10.0)
+    df = _new_rows_df("A.SH", ["2024-01-03"], close=20.0)
+
+    with caplog.at_level(logging.WARNING, logger="webapp.services.sync_service"):
+        _replace_etf_range(db, df, "A.SH", "2024-01-01", "2024-01-31")
+
+    rows = _sec_rows(db, "A.SH")
+    assert [(str(r.trade_date), r.close) for r in rows] == [
+        ("2024-01-02", 10.0),
+        ("2024-01-03", 20.0),
+    ]
+    assert any("遗漏请求区间内已有日期" in r.getMessage() for r in caplog.records)
+
+
+def test_replace_etf_range_drops_out_of_range_rows(db, caplog):
+    """轻校验：请求区间之外的行丢弃并告警，不写库。"""
+    import logging
+
+    from webapp.services.sync_service import _replace_etf_range
+
+    df = _new_rows_df("A.SH", ["2024-01-03", "2023-06-01"], close=20.0)
+
+    with caplog.at_level(logging.WARNING, logger="webapp.services.sync_service"):
+        written = _replace_etf_range(db, df, "A.SH", "2024-01-01", "2024-01-31")
+
+    assert written == 1
+    rows = _sec_rows(db, "A.SH")
+    assert [str(r.trade_date) for r in rows] == ["2024-01-03"]
+    assert any("请求区间之外" in r.getMessage() for r in caplog.records)
+
+
+def test_successful_sync_records_coverage(db, monkeypatch):
+    """F03：同步成功后必须记录源覆盖元数据（供缓存判定免拉）。"""
+    from webapp.models.market_data import EtfCacheCoverage
+
+    df = _new_rows_df("A.SH", ["2024-01-02", "2024-01-03"])
+    task = _run_inline_sync(
+        db, monkeypatch, ["A.SH"], _FakeSource(df=df),
+        start="2024-01-01", end="2024-01-31",
+    )
+
+    assert task.result["success_count"] == 1
+    row = db.get(EtfCacheCoverage, "A.SH")
+    assert row is not None
+    assert str(row.fetched_from) == "2024-01-01"
+    assert str(row.fetched_to) == "2024-01-31"

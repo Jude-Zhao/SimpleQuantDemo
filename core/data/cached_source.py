@@ -33,6 +33,13 @@ class CachedDataSource(DataSource):
             Returns cached data (or empty DataFrame if no cache).
         cache_writer: Callable(df, period) -> None
             Writes fresh data into the cache.
+        cache_latest_date: Callable() -> Timestamp | None
+            全库已知最新交易日，供覆盖判定把请求 end 截断到已知最新交易日。
+        coverage_reader: Callable(sec_codes, start_date, end_date, period) -> set[str]
+            返回 start 侧已有源覆盖证明的证券集合（该证券的源曾被成功请求
+            且请求起点早于等于本次 start，见 EtfCacheCoverage）。
+        coverage_writer: Callable(sec_codes, start_date, end_date, period) -> None
+            成功补拉并写入缓存后记录源侧覆盖区间。
     """
 
     def __init__(
@@ -41,15 +48,18 @@ class CachedDataSource(DataSource):
         cache_reader: Callable | None = None,
         cache_writer: Callable | None = None,
         cache_latest_date: Callable[[], pd.Timestamp | None] | None = None,
+        coverage_reader: Callable | None = None,
+        coverage_writer: Callable | None = None,
     ) -> None:
         self.primary = primary_source
         self.cache_reader = cache_reader
         self.cache_writer = cache_writer
         # 全库（跨所有标的）最新交易日查询，供覆盖判定把请求 end 截断到已
         # 知最新交易日（见 _split_by_coverage）；未注入时退化为用本次缓存
-        # 帧最大日期近似。start 侧无需注入：窗口内首交易日以缓存帧最小日
-        # 期为准（reader 已按 date >= start 过滤）。
+        # 帧最大日期近似。start 侧覆盖由 coverage_reader 提供的元数据判定。
         self.cache_latest_date = cache_latest_date
+        self.coverage_reader = coverage_reader
+        self.coverage_writer = coverage_writer
         # 上一次请求中源侧仍无法补齐的证券（显式不完整状态；完整时为空）
         self.incomplete_codes: list[str] = []
 
@@ -96,7 +106,7 @@ class CachedDataSource(DataSource):
         # per-security date-range judgment — A being covered never masks B
         # being incomplete.
         covered, uncovered = self._split_by_coverage(
-            cached, sec_codes, start_date, end_date
+            cached, sec_codes, start_date, end_date, period
         )
         if not uncovered:
             return cached.sort_values(["date", "sec"]).reset_index(drop=True)
@@ -118,8 +128,19 @@ class CachedDataSource(DataSource):
             )
 
         # 4. Write to cache
-        if self.cache_writer is not None and not fresh_df.empty:
+        if not fresh_df.empty and self.cache_writer is not None:
             self.cache_writer(fresh_df, period)
+            # F03: 缓存写入成功后记录“源侧已被请求过 [start, end]”的覆盖
+            # 元数据；下次请求据此把“上市晚于请求起点”的合法间隔与真正的
+            # 历史缺失区分开。元数据写入失败只降级为下次重复补拉。
+            if self.coverage_writer is not None:
+                try:
+                    self.coverage_writer(fetch_codes, start_date, end_date, period)
+                except Exception:
+                    logger.exception(
+                        "覆盖元数据写入失败（不影响本次行情结果）：sec=%s range=[%s, %s]",
+                        fetch_codes, start_date, end_date,
+                    )
 
         # 5. Merge cached + fresh data
         if cached.empty and fresh_df.empty:
@@ -158,6 +179,7 @@ class CachedDataSource(DataSource):
         sec_codes: list[str],
         start_date: str | pd.Timestamp | None,
         end_date: str | pd.Timestamp | None,
+        period: str = "daily",
     ) -> tuple[list[str], list[str]]:
         """Split requested codes into cache-covered and uncovered (BUG-04).
 
@@ -166,23 +188,22 @@ class CachedDataSource(DataSource):
           证券出现在缓存中即视为命中，不存在部分日期误判为完整命中的问题。
         - 有边界请求采用首尾快路径：仅当请求区间 ⊆ 该证券缓存数据的
           [min_date, max_date] 时才视为覆盖。局限：缓存区间内部缺失的
-          交易日（洞）无法由首尾判断发现——该完整性由写入侧“单事务
-          完整区间替换”（BUG-02）保证；判断不按自然日数量推断交易日，
-          正常周末/节假日不会误报为缺口。
-        - **start/end 截断（方案 A，2026-09-13）**：覆盖判断依据“数据事
-          实”而非自然日历——请求边界落在已知交易日之外时，截断到数据中
-          实际存在的边界再比较，否则周末/节假日/盘后未同步的请求会每次
-          触发必然空手的全量重拉：
-          - end 侧：effective_end = min(end, global_max)。global_max 为全
-            库已知最新交易日（注入查询；退化为缓存帧最大日期）。全库没有
-            任何标的有晚于它的数据，即不存在已知的更新交易日。新交易日由
-            显式同步写入缓存后 global_max 前移，落后于它的标的才触发补拉。
-          - start 侧：effective_start = max(start, frame_min)。frame_min 为
-            缓存帧（reader 已按 date >= start 过滤）最小日期，即窗口内已
-            知首交易日——请求 start 落在节假日（如 2024-01-01 元旦，首交
-            易日 01-02）时，若仍要求缓存从 start 起有数据，同样每次必然
-            重拉。窗口早于帧最小日期的数据不属于本窗口，不能作为覆盖证据。
-          两侧未截断的退化形式均保守：只会少判已知交易日，不会多判。
+          交易日（洞）无法由首尾判断发现——该完整性由写入侧 upsert 语义
+          保证（F01/F04：响应遗漏日期保留旧行，不整段删除）；判断不按
+          自然日数量推断交易日，正常周末/节假日不会误报为缺口。
+        - **end 截断（方案 A，2026-09-13）**：effective_end = min(end,
+          global_max)。global_max 为全库已知最新交易日（注入查询；退化为
+          缓存帧最大日期）。全库没有任何标的有晚于它的数据，即不存在已知
+          的更新交易日。新交易日由显式同步写入缓存后 global_max 前移，
+          落后于它的标的才触发补拉。
+        - **start 侧（F03 修复，2026-09-19）**：不再把请求 start 抬高到
+          缓存帧最小日期——那会把“没有更早数据”循环论证为“无需更早数
+          据”，多年历史缺失（缓存从 2024 年起而请求 2021 年起）会被静默
+          判为覆盖且永不自愈。改为：sec_min <= start 直接覆盖；否则查
+          coverage_reader 注入的源覆盖元数据（该证券的源曾被成功请求过且
+          请求起点 <= 本次 start，即上市晚于请求起点或历史已补齐的合法情
+          形）——有证明则覆盖，无证明则保守补拉。元数据缺失时退化为严格
+          判定（节假日起点会多一次补拉，元数据建立后不再发生）。
         - 周期维度由 cache_reader 按 period 过滤（daily/minute 分表），
           日频与分钟缓存不会互混。
         """
@@ -199,14 +220,16 @@ class CachedDataSource(DataSource):
         end = pd.Timestamp(end_date) if end_date is not None else None
         effective_start = start
         effective_end = end
-        if start is not None and not cached.empty:
-            frame_min = pd.Timestamp(cached["date"].min())
-            if start < frame_min:
-                effective_start = frame_min
         if end is not None:
             global_max = self._cache_latest_known_date(cached)
             if global_max is not None and end > global_max:
                 effective_end = global_max
+        start_covered: set[str] = set()
+        if start is not None and self.coverage_reader is not None:
+            try:
+                start_covered = self.coverage_reader(sec_codes, start, end, period) or set()
+            except Exception:
+                logger.exception("覆盖元数据读取失败，按无证明处理：sec=%s", sec_codes)
         covered: list[str] = []
         uncovered: list[str] = []
         for c in sec_codes:
@@ -216,9 +239,9 @@ class CachedDataSource(DataSource):
                 continue
             sec_min = pd.Timestamp(sub["date"].min())
             sec_max = pd.Timestamp(sub["date"].max())
-            if (effective_start is None or sec_min <= effective_start) and (
-                effective_end is None or sec_max >= effective_end
-            ):
+            start_ok = effective_start is None or sec_min <= effective_start or c in start_covered
+            end_ok = effective_end is None or sec_max >= effective_end
+            if start_ok and end_ok:
                 covered.append(c)
             else:
                 uncovered.append(c)

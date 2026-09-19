@@ -6,6 +6,7 @@ data and macro data. Tasks are kept in memory and tracked by UUID.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -21,7 +22,11 @@ from webapp.models.market_data import EtfDailyBar
 from webapp.services.data_service import (
     _get_primary_source,
     get_etf_list,
+    upsert_coverage_rows,
+    upsert_daily_bars,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SyncStatus(str, Enum):
@@ -309,7 +314,8 @@ def _run_etf_sync(
                 _, jump_warnings = _collect_jump_warnings(df, threshold=_jump_threshold)
                 all_warnings.extend(jump_warnings)
 
-                # 3. 单事务替换：删除与写入同一事务一次 commit，任何异常整体回滚
+                # 3. upsert 写入（F01）：不再整段删除——收到的行覆盖同键
+                #    旧值，响应遗漏的日期保留旧行并告警；越界行丢弃并告警
                 rows_written = _replace_etf_range(
                     db, df, sec_code, start_date, end_date
                 )
@@ -364,21 +370,6 @@ def _run_etf_sync(
             db.close()
 
 
-def _delete_etf_range_rows(
-    db: Session,
-    sec_code: str,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-) -> int:
-    """Delete ETF daily bars in a date range WITHOUT committing (transaction-scoped)."""
-    deleted = db.query(EtfDailyBar).filter(
-        EtfDailyBar.sec_code == sec_code,
-        EtfDailyBar.trade_date >= start.date(),
-        EtfDailyBar.trade_date <= end.date(),
-    ).delete(synchronize_session=False)
-    return deleted
-
-
 def _replace_etf_range(
     db: Session,
     df: pd.DataFrame,
@@ -386,22 +377,74 @@ def _replace_etf_range(
     start_date: str,
     end_date: str,
 ) -> int:
-    """BUG-02: fetch/validate 通过后，在同一事务内删除旧区间并写入，一次 commit。
+    """F01 最小修复：不再“整段删除 + 重写”，改为按 (sec_code, trade_date)
+    原子 upsert 收到的行，响应遗漏的日期保留旧行并告警。
 
-    任何一步失败都整体回滚，保证“一次区间替换全部成功或全部不发生”，
-    且失败标的不会向 Session 泄漏 pending 对象。written 仅在 commit
-    成功后按实际写入行数返回。
+    原实现（BUG-02 单事务删除+重写）只能保证原子性：源返回非空但部分分
+    段缺失/截断时，会把请求区间内全部旧数据替换成少量新行且照常提交，
+    rollback 保护无效。upsert 语义下，“空结果不进入本函数、部分缺失只
+    覆盖收到的日期、写入异常整体回滚”三种情况均保留旧有效行。轻校验：
+    请求区间之外的行丢弃并告警，不写库。覆盖元数据与行情写入同一事务
+    提交（保持 BUG-02 的单 commit 不变量）。
     """
     start = pd.to_datetime(start_date)
     end = pd.to_datetime(end_date)
     try:
-        _delete_etf_range_rows(db, sec_code, start, end)
-        written = _write_etf_data(db, df, commit=False)
+        scoped = df
+        dates = pd.to_datetime(scoped["date"])
+        out_mask = (dates < start) | (dates > end)
+        if out_mask.any():
+            bad = sorted(
+                {pd.Timestamp(d).date().isoformat() for d in dates[out_mask].unique()}
+            )[:10]
+            logger.warning(
+                "同步收到请求区间之外的行情，已丢弃：sec=%s range=[%s, %s] dates=%s",
+                sec_code, start_date, end_date, bad,
+            )
+            scoped = scoped[~out_mask]
+        written = upsert_daily_bars(db, scoped, commit=False)
+        _warn_omitted_dates(db, sec_code, start, end, scoped)
+        upsert_coverage_rows(db, [sec_code], start_date, end_date, commit=False)
         db.commit()
         return written
     except Exception:
         db.rollback()
         raise
+
+
+def _warn_omitted_dates(
+    db: Session,
+    sec_code: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    scoped: pd.DataFrame,
+) -> None:
+    """F01: 源响应遗漏请求区间内已有日期时告警（旧行保留，仅可观测）。
+
+    不假定供应商截断一定发生，但把它从“静默丢数据”变成“显式告警”。
+    """
+    got = (
+        {pd.Timestamp(d).date() for d in scoped["date"].unique()}
+        if not scoped.empty
+        else set()
+    )
+    db_dates = (
+        db.query(EtfDailyBar.trade_date)
+        .filter(
+            EtfDailyBar.sec_code == sec_code,
+            EtfDailyBar.trade_date >= start.date(),
+            EtfDailyBar.trade_date <= end.date(),
+        )
+        .all()
+    )
+    omitted = sorted({d for (d,) in db_dates} - got)
+    if omitted:
+        shown = ", ".join(d.isoformat() for d in omitted[:10])
+        more = f" 等 {len(omitted)} 天" if len(omitted) > 10 else ""
+        logger.warning(
+            "源响应遗漏请求区间内已有日期（旧行已保留）：sec=%s range=[%s, %s] dates=%s%s",
+            sec_code, start.date(), end.date(), shown, more,
+        )
 
 
 def _fetch_etf_from(
@@ -455,35 +498,9 @@ def _collect_jump_warnings(
 
 
 def _write_etf_data(db: Session, df: pd.DataFrame, commit: bool = True) -> int:
-    """Write ETF daily data to cache. Returns number of rows written.
+    """Write ETF daily data to cache. Returns number of rows received.
 
-    ``commit=False`` leaves the transaction open for the caller so delete
-    and write can land in a single commit (BUG-02).
+    ``commit=False`` leaves the transaction open for the caller so the
+    write can land in a single commit（F01：upsert，不删除遗漏日期的旧行）。
     """
-    if df.empty:
-        return 0
-
-    count = 0
-    for _, row in df.iterrows():
-        sec = row["sec"]
-        date_val = pd.to_datetime(row["date"]).date()
-        bar_id = f"{sec}_{date_val.isoformat()}"
-
-        bar = EtfDailyBar(
-            id=bar_id,
-            sec_code=sec,
-            trade_date=date_val,
-            open=float(row.get("open", 0)),
-            high=float(row.get("high", 0)),
-            low=float(row.get("low", 0)),
-            close=float(row.get("close", 0)),
-            volume=float(row.get("volume", 0)),
-            amount=float(row.get("amount", 0)),
-            source=row.get("source", "akshare"),
-        )
-        db.add(bar)
-        count += 1
-
-    if commit:
-        db.commit()
-    return count
+    return upsert_daily_bars(db, df, commit=commit)

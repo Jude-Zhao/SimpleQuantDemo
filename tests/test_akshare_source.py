@@ -31,7 +31,7 @@ def _install_segment_stub(monkeypatch) -> list[tuple[str, str]]:
 
     def fake_get(hs_code: str, start: str, end: str, fq: str, retries: int = 3):
         calls.append((start, end))
-        return []
+        return [], False
 
     monkeypatch.setattr(AkShareDataSource, "_tencent_get", staticmethod(fake_get))
     return calls
@@ -173,8 +173,9 @@ def test_tencent_get_parses_hfq_rows(monkeypatch):
         return _FakeResponse(payload=payload)
 
     monkeypatch.setattr(ak_mod.requests, "get", fake_get)
-    rows = AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=1)
+    rows, fell_back = AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=1)
     assert rows and rows[0][0] == "2024-01-02"
+    assert fell_back is False
 
 
 def test_tencent_get_empty_data_is_not_error(monkeypatch):
@@ -183,8 +184,76 @@ def test_tencent_get_empty_data_is_not_error(monkeypatch):
         return _FakeResponse(payload={"data": {}})
 
     monkeypatch.setattr(ak_mod.requests, "get", fake_get)
-    rows = AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=3)
+    rows, fell_back = AkShareDataSource._tencent_get("sh510300", "2024-01-01", "2024-01-10", "hfq", retries=3)
     assert rows == []
+    assert fell_back is False
+
+
+# ── F02: hfq 请求缺 hfqday 时的 day 回退必须显式可识别 ────────────────
+
+
+def test_hfq_missing_hfqday_falls_back_with_flag_and_warning(monkeypatch, caplog):
+    """F02：hfq 请求只回 day（无复权事件证券的常态）→ 返回行 + 回退标志
+    True + WARNING，不再静默混作 hfq。"""
+    import logging
+
+    payload = {
+        "data": {
+            "sh511990": {"day": [["2024-01-02", "100", "100.1", "100.2", "99.9", "500", "5000"]]}
+        }
+    }
+
+    def fake_get(url, headers=None, timeout=None):
+        return _FakeResponse(payload=payload)
+
+    monkeypatch.setattr(ak_mod.requests, "get", fake_get)
+
+    with caplog.at_level(logging.WARNING, logger="core.data.akshare_source"):
+        rows, fell_back = AkShareDataSource._tencent_get(
+            "sh511990", "2024-01-01", "2024-01-10", "hfq", retries=1
+        )
+
+    assert len(rows) == 1
+    assert fell_back is True
+    assert any("回退 day" in r.getMessage() for r in caplog.records)
+
+
+def test_hfq_fallback_rows_marked_in_source_column(monkeypatch):
+    """F02：day 回退的行以 source="akshare(hfq=day)" 打标入库，口径可区分。"""
+    payload = {
+        "data": {
+            "sh511990": {"day": [["2024-01-02", "100", "100.1", "100.2", "99.9", "500", "5000"]]}
+        }
+    }
+
+    def fake_get(url, headers=None, timeout=None):
+        return _FakeResponse(payload=payload)
+
+    monkeypatch.setattr(ak_mod.requests, "get", fake_get)
+
+    ds = AkShareDataSource()
+    out = ds.get_etf_price_by_codes(["511990.SH"], start_date="2024-01-01", end_date="2024-01-10")
+    assert not out.empty
+    assert set(out["source"].unique()) == {"akshare(hfq=day)"}
+
+
+def test_hfq_normal_rows_keep_plain_source(monkeypatch):
+    """正常 hfqday 响应仍标记 source="akshare"。"""
+    payload = {
+        "data": {
+            "sh510300": {"hfqday": [["2024-01-02", "1.0", "2.0", "3.0", "0.9", "100", "1000"]]}
+        }
+    }
+
+    def fake_get(url, headers=None, timeout=None):
+        return _FakeResponse(payload=payload)
+
+    monkeypatch.setattr(ak_mod.requests, "get", fake_get)
+
+    ds = AkShareDataSource()
+    out = ds.get_etf_price_by_codes(["510300.SH"], start_date="2024-01-01", end_date="2024-01-10")
+    assert not out.empty
+    assert set(out["source"].unique()) == {"akshare"}
 
 
 def test_throttle_applies_interval_range(monkeypatch):

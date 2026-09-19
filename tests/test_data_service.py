@@ -110,3 +110,54 @@ def test_cache_idempotent(test_db):
     reader = _cache_reader(test_db)
     cached = reader(["510300.SH"], "2024-01-02", "2024-01-03", "daily")
     assert len(cached) == 2  # Not 4
+
+
+# ── F04：重叠新行情必须更新旧缓存（upsert），返回与持久化语义一致 ──────
+
+
+def test_write_daily_cache_upserts_revisions(test_db):
+    """F04：新拉取覆盖已有日期时，库内旧值必须被新值替换（原实现跳过已
+    存在 id，修订值只进返回不进库）。"""
+    from webapp.services.data_service import _cache_reader, _cache_writer
+
+    def _frame(closes):
+        return pd.DataFrame(
+            [
+                {"date": pd.Timestamp("2024-01-0" + str(i + 2)), "sec": "510300.SH",
+                 "open": c, "high": c, "low": c, "close": c, "volume": 1, "amount": 1,
+                 "source": "test"}
+                for i, c in enumerate(closes)
+            ]
+        )
+
+    writer = _cache_writer(test_db)
+    writer(_frame([10.0, 11.0]), "daily")
+    writer(_frame([20.0, 21.0, 22.0]), "daily")  # 重叠 + 新日期
+
+    reader = _cache_reader(test_db)
+    cached = reader(["510300.SH"], None, None, "daily")
+    got = cached.sort_values("date").close.tolist()
+    assert got == [20.0, 21.0, 22.0]  # 修订值入库，与返回语义一致
+
+
+# ── F03：源覆盖元数据（EtfCacheCoverage）读写 ─────────────────────────
+
+
+def test_coverage_rows_monotone_and_reader(test_db):
+    """fetched_from 取历史最小、fetched_to 取历史最大；reader 只返回
+    fetched_from <= 请求 start 的证券。"""
+    from webapp.services.data_service import (
+        _coverage_reader,
+        upsert_coverage_rows,
+    )
+
+    upsert_coverage_rows(test_db, ["510300.SH", "510500.SH"], "2024-06-01", "2024-12-31")
+    upsert_coverage_rows(test_db, ["510300.SH"], "2021-01-04", "2024-05-31")  # 扩张 from
+
+    reader = _coverage_reader(test_db)
+    assert reader(["510300.SH", "510500.SH"], "2023-01-01", None, "daily") == {"510300.SH"}
+    assert reader(["510300.SH", "510500.SH"], "2024-06-01", None, "daily") == {
+        "510300.SH",
+        "510500.SH",
+    }
+    assert reader(["510300.SH"], None, None, "daily") == set()  # 无界请求无 start 语义

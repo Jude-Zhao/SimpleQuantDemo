@@ -15,9 +15,13 @@ class _FakeDataSource:
         self._data = data
         self._should_fail = should_fail
         self.fetch_count = 0
+        self.calls: list[dict] = []
 
     def get_etf_price_by_codes(self, sec_codes, start_date=None, end_date=None, period="daily"):
         self.fetch_count += 1
+        self.calls.append(
+            {"sec_codes": list(sec_codes), "start_date": start_date, "end_date": end_date}
+        )
         if self._should_fail:
             raise RuntimeError("source failure")
         if self._data is None:
@@ -356,9 +360,9 @@ def test_end_beyond_global_max_no_refetch():
     assert len(result) == 10  # 全部缓存行原样返回
 
 
-def test_start_before_first_trading_day_no_refetch():
-    """回归：请求 start 落在节假日（早于窗口内首交易日）时，以缓存帧内
-    已知首交易日截断，不得触发必然空手的全量重拉（首页 65s 的元凶之一）。"""
+def test_holiday_start_with_coverage_metadata_no_refetch():
+    """回归（F03 修复后契约）：请求 start 落在节假日（晚于缓存首交易日）时，
+    由源覆盖元数据证明该证券已被成功请求过 → 命中，不触发源调用。"""
     data = _make_sample_data()  # 两证券，2024-01-02..01-08
     primary = _FakeDataSource(data)
     cached_data = data.copy()
@@ -366,7 +370,14 @@ def test_start_before_first_trading_day_no_refetch():
     def reader(codes, start, end, period):
         return cached_data.copy()
 
-    cached = CachedDataSource(primary_source=primary, cache_reader=reader)
+    def coverage_reader(codes, start, end, period):
+        return set(codes)  # 元数据：源已被请求过且起点早于本次 start
+
+    cached = CachedDataSource(
+        primary_source=primary,
+        cache_reader=reader,
+        coverage_reader=coverage_reader,
+    )
 
     # start=01-01（元旦假日，非交易日），首交易日 01-02
     result = cached.get_etf_price_by_codes(
@@ -375,6 +386,95 @@ def test_start_before_first_trading_day_no_refetch():
 
     assert primary.fetch_count == 0
     assert len(result) == 10
+
+
+# ── F03：start 侧不得抬高请求起点掩盖历史缺失 ─────────────────────────
+
+
+def test_multi_year_history_gap_triggers_refetch_without_metadata():
+    """F03：缓存只从 2024 年起而请求 2021 年起，且无覆盖元数据 → 必须按
+    原始 start 补拉，不得把“没有更早数据”当成“无需更早数据”（原实现
+    抬高 effective_start 后 0 次源调用、多年历史静默缺失）。"""
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2024-06-03"), "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 10.0, "volume": 1, "amount": 1},
+            {"date": pd.Timestamp("2024-06-04"), "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 11.0, "volume": 1, "amount": 1},
+        ]
+    )
+    primary = _FakeDataSource(frame)
+
+    def reader(codes, start, end, period):
+        return frame.copy()
+
+    cached = CachedDataSource(primary_source=primary, cache_reader=reader)
+
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH"], start_date="2021-01-04", end_date="2024-06-04"
+    )
+
+    assert primary.fetch_count == 1  # 必须补拉
+    assert primary.calls[0]["start_date"] == "2021-01-04"  # 按原始起点补拉
+
+
+def test_start_gap_with_coverage_metadata_no_refetch():
+    """同上场景但元数据证明源已被请求到更早起（历史已补齐/上市晚于起点）
+    → 视为覆盖，不触发源调用。"""
+    frame = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2024-06-03"), "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 10.0, "volume": 1, "amount": 1},
+            {"date": pd.Timestamp("2024-06-04"), "sec": "510300.SH", "open": 1, "high": 1, "low": 1, "close": 11.0, "volume": 1, "amount": 1},
+        ]
+    )
+    primary = _FakeDataSource(frame)
+
+    def reader(codes, start, end, period):
+        return frame.copy()
+
+    def coverage_reader(codes, start, end, period):
+        return set(codes)
+
+    cached = CachedDataSource(
+        primary_source=primary, cache_reader=reader, coverage_reader=coverage_reader
+    )
+
+    result = cached.get_etf_price_by_codes(
+        ["510300.SH"], start_date="2021-01-04", end_date="2024-06-04"
+    )
+
+    assert primary.fetch_count == 0
+    assert len(result) == 2
+
+
+def test_successful_fetch_records_coverage():
+    """成功补拉并写入缓存后，必须记录源覆盖元数据（含请求的原始边界）。"""
+    data = _make_sample_data()
+    primary = _FakeDataSource(data)
+
+    def reader(codes, start, end, period):
+        return pd.DataFrame()
+
+    coverage_calls: list[tuple] = []
+
+    def coverage_writer(codes, start, end, period):
+        coverage_calls.append((list(codes), start, end, period))
+
+    cached = CachedDataSource(
+        primary_source=primary,
+        cache_reader=reader,
+        cache_writer=lambda df, period: None,
+        coverage_writer=coverage_writer,
+    )
+
+    cached.get_etf_price_by_codes(
+        ["510300.SH"], start_date="2024-01-02", end_date="2024-01-08"
+    )
+
+    assert len(coverage_calls) == 1
+    codes, start, end, period = coverage_calls[0]
+    assert codes == ["510300.SH"]
+    assert pd.Timestamp(start) == pd.Timestamp("2024-01-02")
+    assert pd.Timestamp(end) == pd.Timestamp("2024-01-08")
+    assert period == "daily"
 
 
 def test_injected_global_max_newer_triggers_fetch():

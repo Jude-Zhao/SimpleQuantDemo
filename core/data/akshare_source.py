@@ -8,6 +8,7 @@ and version.
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 import time
@@ -22,6 +23,8 @@ except ImportError:  # pragma: no cover
 
 from core.data.base import DataSource
 from core.data.default_universe import DEFAULT_ACTIVE_CODES
+
+logger = logging.getLogger(__name__)
 
 
 class AkShareDataUnavailable(RuntimeError):
@@ -135,9 +138,10 @@ class AkShareDataSource(DataSource):
 
         all_frames: list[pd.DataFrame] = []
         for sec_code in sec_codes:
-            # BUG-05: 后复权(hfq)是唯一允许入库的口径。hfq 取不到时不再
-            # 回退未复权数据（未复权不得作为后复权成功入库），由上层
-            # 保留旧数据并报告失败。
+            # BUG-05: 后复权(hfq)是唯一允许入库的口径；禁止回退其他数据源
+            # （Sina 等）。响应内缺 hfqday 的 day 回退（无复权事件证券的
+            # 常态，见 _tencent_get）仍被接受，但会显式告警并以
+            # source="akshare(hfq=day)" 打标，口径可识别、不静默混作 hfq。
             try:
                 df = self._fetch_hfq_price(ak, sec_code, start_date, end_date)
             except TencentSourceError:
@@ -186,7 +190,7 @@ class AkShareDataSource(DataSource):
         if start[:4] > end[:4]:
             return pd.DataFrame()
 
-        hfq_rows = self._tencent_fetch_range(hs_code, start, end, "hfq")
+        hfq_rows, hfq_fallback = self._tencent_fetch_range(hs_code, start, end, "hfq")
         if not hfq_rows:
             return pd.DataFrame()
 
@@ -194,7 +198,10 @@ class AkShareDataSource(DataSource):
         df = df.drop_duplicates(subset="date", keep="last")
         df = df.sort_values("date").reset_index(drop=True)
 
-        df["source"] = "akshare"
+        # F02: 响应缺 hfqday 而回退 day（未复权价）时打可区分标记，口径
+        # 不再与真 hfq 行不可区分；一旦证券发生复权事件，后续 hfqday 重拉
+        # 会经 upsert 覆盖这些行，序列回归自洽。
+        df["source"] = "akshare(hfq=day)" if hfq_fallback else "akshare"
         return self._filter_by_date(df, start_date, end_date)
 
     @classmethod
@@ -221,11 +228,16 @@ class AkShareDataSource(DataSource):
         end: str,
         fq: str,
         retries: int = 3,
-    ) -> list[list]:
-        """Fetch kline rows for a date range, split into multi-year segments."""
+    ) -> tuple[list[list], bool]:
+        """Fetch kline rows for a date range, split into multi-year segments.
+
+        Returns ``(rows, fell_back)``：任一分段发生口径回退（F02，见
+        ``_tencent_get``）即 ``fell_back=True``，供调用方对整批行打标。
+        """
         if requests is None:
-            return []
+            return [], False
         out: list[list] = []
+        any_fallback = False
         start_year = int(start[:4])
         end_year = int(end[:4])
         year = start_year
@@ -233,15 +245,19 @@ class AkShareDataSource(DataSource):
             seg_end_year = min(year + AkShareDataSource._SEGMENT_YEARS - 1, end_year)
             seg_start = f"{year}-01-01"
             seg_end = f"{seg_end_year}-12-31" if seg_end_year < end_year else end
-            rows = AkShareDataSource._tencent_get(hs_code, seg_start, seg_end, fq, retries)
+            rows, fell_back = AkShareDataSource._tencent_get(hs_code, seg_start, seg_end, fq, retries)
             out.extend(rows)
+            any_fallback = any_fallback or fell_back
             year = seg_end_year + 1
-        return out
+        return out, any_fallback
 
     @staticmethod
-    def _tencent_get(hs_code: str, start: str, end: str, fq: str, retries: int = 3) -> list[list]:
+    def _tencent_get(hs_code: str, start: str, end: str, fq: str, retries: int = 3) -> tuple[list[list], bool]:
         """Fetch one kline segment with browser headers, throttling, and
         exponential backoff.
+
+        Returns ``(rows, fell_back)``：响应缺少请求口径字段而回退 day 时为
+        True（F02；正常应答不重试，直接返回）。
 
         WAF 拦截（HTTP 501 / 拦截页）为分钟级 IP 封禁，重试无益且可能加剧，
         立即抛 ``TencentSourceError``；网络异常 / 非法 JSON / 其他非 200
@@ -279,9 +295,22 @@ class AkShareDataSource(DataSource):
             if isinstance(entry, list):
                 entry = {}
             key = "hfqday" if fq == "hfq" else ("qfqday" if fq == "qfq" else "day")
+            fell_back = False
             if key not in entry:
+                # F02: hfq/qfq 请求缺目标字段时回退 day（未复权口径）——经
+                # 实证，无复权事件证券（如货币 ETF 511990）腾讯本就只返回
+                # day，属常态而非故障；但不得静默混作 hfq 入库，实际以 day
+                # 行替代时必须告警并由 _fetch_hfq_price 打可区分的 source
+                # 标记。标的关键整体缺失（如未上市）无行可返，不算回退。
                 key = "day"
-            return entry.get(key) or []
+                fell_back = fq != "day" and bool(entry.get("day"))
+                if fell_back:
+                    logger.warning(
+                        "腾讯响应缺少 %s 字段，回退 day（未复权）口径："
+                        "sec=%s range=[%s, %s]（常见于无复权事件证券，hfq≡day）",
+                        "hfqday" if fq == "hfq" else "qfqday", hs_code, start, end,
+                    )
+            return entry.get(key) or [], fell_back
         raise TencentSourceError(
             f"腾讯行情接口连续 {retries} 次请求失败：{last_error}"
         )
