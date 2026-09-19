@@ -43,6 +43,8 @@ class MFIFactor(FactorBuilder):
         neg_flow = (-flow.where(flow < 0.0, 0.0)).rolling(14).sum()
         denom = (pos_flow + neg_flow).replace(0.0, np.nan)
         factor = pos_flow / denom
+        # 窗口内任一流量不可计算（缺失观测）即无效，缺失不得当作零流量参与窗口
+        factor = factor.where(flow.rolling(14).count() == 14)
         factor.index.name = "date"
         validate_factor_matrix(factor, universe, name=self.name)
         return factor

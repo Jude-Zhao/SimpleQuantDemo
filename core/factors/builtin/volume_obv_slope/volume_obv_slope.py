@@ -43,11 +43,11 @@ class VolumeOBVSlope(FactorBuilder):
         macro_data: pd.DataFrame,
         universe: list[str],
     ) -> pd.DataFrame:
-        close = pivot_price_field(price_data, field="close", universe=universe).ffill()
-        volume = pivot_price_field(price_data, field="volume", universe=universe).ffill()
+        close = pivot_price_field(price_data, field="close", universe=universe)
+        volume = pivot_price_field(price_data, field="volume", universe=universe)
         w = self.window
 
-        signed = np.sign(close.diff()).fillna(0.0) * volume.fillna(0.0)
+        signed = np.sign(close.diff()) * volume
         obv = signed.cumsum()
 
         x = np.arange(w, dtype=float)
@@ -63,7 +63,6 @@ class VolumeOBVSlope(FactorBuilder):
         # 用窗口内成交量均值做缩放，得到相对资金流强度，避免量级差异主导
         vol_mean = volume.rolling(w).mean()
         factor = obv.rolling(w).apply(_slope, raw=True) / vol_mean.replace(0.0, np.nan)
-        factor = factor.ffill(limit=5)
         factor.index.name = "date"
 
         validate_factor_matrix(factor, universe, name=self.name)

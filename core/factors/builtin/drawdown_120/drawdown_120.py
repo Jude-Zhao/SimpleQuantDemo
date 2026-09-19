@@ -35,6 +35,8 @@ class Drawdown120Factor(FactorBuilder):
         running_max = close.cummax()
         dd = close / running_max - 1.0
         factor = dd.rolling(120, min_periods=1).min()
+        # 当日无有效价格时输出 NaN，缺失日不得继承历史回撤
+        factor = factor.where(close.notna())
         factor.index.name = "date"
         validate_factor_matrix(factor, universe, name=self.name)
         return factor

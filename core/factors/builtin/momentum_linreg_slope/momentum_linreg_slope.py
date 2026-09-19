@@ -43,7 +43,7 @@ class MomentumLinRegSlope(FactorBuilder):
         macro_data: pd.DataFrame,
         universe: list[str],
     ) -> pd.DataFrame:
-        close = pivot_price_field(price_data, field="close", universe=universe).ffill()
+        close = pivot_price_field(price_data, field="close", universe=universe)
         w = self.window
         logclose = np.log(close)
         x = np.arange(w, dtype=float)
@@ -64,7 +64,6 @@ class MomentumLinRegSlope(FactorBuilder):
         rets = logclose.diff()
         vol = rets.rolling(w).apply(_vol, raw=True)
         factor = slope / vol.replace(0.0, np.nan)
-        factor = factor.ffill(limit=5)
         factor.index.name = "date"
 
         validate_factor_matrix(factor, universe, name=self.name)
