@@ -14,6 +14,7 @@ from core.analysis.ic import (
 )
 from core.factors.config import FactorCategory, FactorInstance, list_factor_categories
 from core.factors.registry import get_factor_class
+from core.factors.utils import pivot_price_field
 from webapp.schemas.factor import (
     FactorCategoryMeta,
     FactorComputeResponse,
@@ -139,9 +140,8 @@ def compute_factor(
     )
 
     # Group returns
-    group_returns = _calculate_group_returns(
-        factor_matrix, forward_ret, n_groups=n_groups, horizon=horizon
-    )
+    close = pivot_price_field(price_data, field="close", universe=universe)
+    group_returns = _calculate_group_returns(factor_matrix, close, n_groups=n_groups)
 
     return FactorComputeResponse(
         factor_name=factor_name,
@@ -253,36 +253,39 @@ def _class_granularity_correlation(
 
 def _calculate_group_returns(
     factor_matrix: pd.DataFrame,
-    forward_ret: pd.DataFrame,
+    close: pd.DataFrame,
     n_groups: int = 5,
-    horizon: int = 5,
 ) -> list[FactorGroupReturn]:
-    """Calculate average forward return for each factor quintile/decile group."""
-    group_returns: dict[int, list[float]] = {i: [] for i in range(1, n_groups + 1)}
+    """Daily-rebalanced group portfolio returns.
 
-    for date in factor_matrix.index:
-        if date not in forward_ret.index:
-            continue
-        fac = factor_matrix.loc[date].dropna()
-        ret = forward_ret.loc[date].dropna()
-        common = fac.index.intersection(ret.index)
+    每个信号日按因子 pct-rank 分组；T 日信号在 T+1 收盘建仓、T+2 收盘
+    调仓（与 IC 的 T+1 进场口径一致），组内等权的日收益逐日复利得到可
+    实现的净值路径——重叠持有期不再被重复计数。
+    """
+    daily_ret = close.pct_change(fill_method=None).reindex(
+        index=factor_matrix.index, columns=factor_matrix.columns
+    )
+    dates = factor_matrix.index
+
+    group_daily: dict[int, list[float]] = {i: [] for i in range(1, n_groups + 1)}
+    for k in range(len(dates) - 2):
+        fac = factor_matrix.iloc[k].dropna()
+        dr = daily_ret.iloc[k + 2].dropna()
+        common = fac.index.intersection(dr.index)
         if len(common) < n_groups:
             continue
         fac = fac[common]
-        ret = ret[common]
-
-        # Rank and split into groups
         ranked = fac.rank(pct=True)
         for i in range(n_groups):
             lower = i / n_groups
             upper = (i + 1) / n_groups
             mask = (ranked > lower) & (ranked <= upper)
             if mask.sum() > 0:
-                group_returns[i + 1].append(float(ret[mask].mean()))
+                group_daily[i + 1].append(float(dr[mask].mean()))
 
     result: list[FactorGroupReturn] = []
     for g in range(1, n_groups + 1):
-        rets = group_returns[g]
+        rets = group_daily[g]
         if not rets:
             result.append(FactorGroupReturn(group=g, annual_return=0.0, cumulative_return=0.0))
             continue
@@ -290,10 +293,9 @@ def _calculate_group_returns(
         for r in rets:
             cum *= (1 + r)
         cumulative = cum - 1.0
-        # Annualize: assume horizon trading days per period, ~252 trading days/year
-        n_periods = len(rets)
-        if n_periods > 0 and cumulative > -1:
-            annual = math.pow(1 + cumulative, 252 / (horizon * n_periods)) - 1
+        n_days = len(rets)
+        if n_days > 0 and cum > 0:
+            annual = math.pow(cum, 252 / n_days) - 1
         else:
             annual = 0.0
         result.append(FactorGroupReturn(
