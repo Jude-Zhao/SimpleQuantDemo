@@ -19,7 +19,8 @@ by ``research`` (its own experimental factor pool).
 
 from __future__ import annotations
 
-from typing import Callable
+import math
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -128,6 +129,18 @@ def _reindex_weights(
     return np.array([weights.get(k, 0.0) for k in category_keys], dtype=float)
 
 
+def _check_finite_number(value: Any, name: str) -> float:
+    """F11: 合成参数一律要求有限实数——拒绝 bool/字符串/None/NaN/Inf。"""
+    if isinstance(value, bool) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        raise ValueError(f"{name} 必须为有限实数，收到 {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} 必须为有限实数，收到 {value!r}")
+    return number
+
+
 def faa_composite(
     category_scores: dict[str, pd.DataFrame],
     class_weights: dict[str, float],
@@ -137,11 +150,16 @@ def faa_composite(
 
     只遍历正权重类别（零权重类别不参与合成，其缺失不影响资格）；跨类别取
     有效性 AND——任一启用类别当日无效则合成得分为 NaN，不用 fill_value
-    抹掉缺失。正权重类别缺失（启用但为空）属配置错误。
+    抹掉缺失。正权重类别缺失（启用但为空）属配置错误。F11: 权重必须
+    非负有限——负权重会被计入归一化分母却跳过合成项，静默扭曲其余权重。
     """
     keys = list(category_scores.keys())
     if not keys:
         raise ValueError("No non-empty factor categories to score.")
+    for key, weight in class_weights.items():
+        checked = _check_finite_number(weight, f"class_weights[{key!r}]")
+        if checked < 0:
+            raise ValueError(f"class_weights[{key!r}] 必须为非负数，收到 {weight!r}")
     w = _reindex_weights(class_weights, keys)
     total = w.sum()
     if total <= 0:
@@ -178,12 +196,25 @@ def eaa_composite(
 
     只遍历正指数类别；跨启用类别取有效性 AND——任一启用类别当日无效则
     合成得分为 NaN，不用 fill_value 抹掉缺失。正指数类别缺失（启用但为空）
-    属配置错误。
+    属配置错误。F11: β 必须为正有限数——β=0 会把 NaN 格变为 1（缺失被
+    激活为合格），负 β 颠倒排序；指数非负有限；幂运算后重新应用原资格
+    掩码，任何参数取值都不能把缺失变为合格。
     """
     keys = list(category_scores.keys())
     contributing = [k for k in keys if exponents.get(k, 0.0) > 0]
     if not contributing:
         raise ValueError("exponents must contain at least one positive value.")
+
+    beta_value = _check_finite_number(beta, "beta")
+    if beta_value <= 0:
+        raise ValueError(
+            f"beta 必须为正数，收到 {beta!r}：β=0 会把缺失格激活为合格（NaN**0=1），"
+            "负 β 会颠倒排序"
+        )
+    for key, alpha in exponents.items():
+        checked = _check_finite_number(alpha, f"exponents[{key!r}]")
+        if checked < 0:
+            raise ValueError(f"exponents[{key!r}] 必须为非负数，收到 {alpha!r}")
 
     # 启用（正指数）但被配置为空/缺失的类别 → 配置错误，显式拒绝。
     missing_enabled = {k for k in exponents if exponents[k] > 0 and k not in keys}
@@ -202,4 +233,6 @@ def eaa_composite(
 
     if product is None:
         raise ValueError("No category scores available for EAA composite.")
-    return product ** beta
+    # F11: 幂运算后重新应用原资格掩码——跨启用类别 AND 的 NaN 语义不因
+    # 参数取值失效（β>0 时 NaN**β 本应为 NaN，此处对意外路径兜底）。
+    return (product ** beta_value).where(product.notna())

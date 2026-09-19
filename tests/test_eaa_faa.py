@@ -154,6 +154,52 @@ def test_eaa_composite_raises_without_positive_exponent():
         eaa_composite(scores, {}, beta=1.0)
 
 
+# ── F11: 合成参数校验（β 正有限、权重/指数非负有限、NaN 掩码不被幂运算复活）──
+
+
+def _tiny_scores() -> dict[str, pd.DataFrame]:
+    idx = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    return {"x": pd.DataFrame([[np.nan, 1.0], [0.6, 0.8]], index=idx, columns=["A", "B"])}
+
+
+def test_eaa_composite_rejects_beta_zero():
+    """F11 审计证据：β=0 会把 [NaN,1] 变成 [1,1]（缺失被激活为合格）——拒绝。"""
+    with pytest.raises(ValueError):
+        eaa_composite(_tiny_scores(), {"x": 1.0}, beta=0)
+
+
+def test_eaa_composite_rejects_negative_and_nonfinite_beta():
+    for bad in (-0.5, float("nan"), float("inf"), True, "1.0"):
+        with pytest.raises(ValueError):
+            eaa_composite(_tiny_scores(), {"x": 1.0}, beta=bad)
+
+
+def test_eaa_composite_rejects_negative_or_nonfinite_exponent():
+    for bad in (-1.0, float("nan")):
+        with pytest.raises(ValueError):
+            eaa_composite(_tiny_scores(), {"x": bad}, beta=1.0)
+
+
+def test_eaa_composite_keeps_nan_mask_after_power():
+    """F11 验收：任何参数都不能把缺失变为合格——合法 β 下 NaN 仍为 NaN。
+
+    输入行 [NaN, 1.0]（无区分度 → 有效格映射 1.0，NaN 保持）：β=0 时
+    旧行为输出 [1,1]；修复后 β>0 输出保持 [NaN, 1]。
+    """
+    got = eaa_composite(_tiny_scores(), {"x": 1.0}, beta=2.0)
+    assert np.isnan(got.iloc[0, 0])
+    assert got.iloc[0, 1] == pytest.approx(1.0)
+    assert np.isnan(eaa_composite(_tiny_scores(), {"x": 1.0}, beta=0.5).iloc[0, 0])
+
+
+def test_faa_composite_rejects_negative_weight():
+    """F11: 负权重会被计入归一化分母却跳过合成项，静默扭曲其余权重——拒绝。"""
+    with pytest.raises(ValueError):
+        faa_composite(_tiny_scores(), {"x": -0.3})
+    with pytest.raises(ValueError):
+        faa_composite(_tiny_scores(), {"x": float("nan")})
+
+
 # ── ScoreWeightedOptimizer ─────────────────────────────────────────────
 
 def test_score_weighted_optimizer():

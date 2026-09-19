@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class StrategyParamSchema(BaseModel):
@@ -30,6 +31,19 @@ class StrategyMeta(BaseModel):
     params_schema: list[StrategyParamSchema] = Field(default_factory=list)
 
 
+_REBALANCE_FREQS = ("weekly", "monthly", "5d")
+
+
+def _require_finite_number(value: Any, name: str) -> float:
+    """F11: 参数数值校验——拒绝 bool/字符串/None/NaN/Inf。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} 必须为数值，收到 {value!r}")
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError(f"{name} 必须为有限数，收到 {value!r}")
+    return number
+
+
 class StrategyRunRequest(BaseModel):
     """Request to run a strategy."""
 
@@ -37,6 +51,51 @@ class StrategyRunRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     start_date: str | None = None
     end_date: str | None = None
+
+    @field_validator("params")
+    @classmethod
+    def _validate_params(cls, params: dict[str, Any]) -> dict[str, Any]:
+        """F11: 提交前校验已知参数键（服务端契约，前端滑杆限制不构成约束）：
+        beta 为正有限数、top_n 为正整数、调仓频率合法、权重/指数非负有限且
+        非空时有正项。非法值 422 拒绝，不带病进入任务；核心合成函数保留
+        同等校验兜底。未识别的键不在此约束（params 保持自由字典）。
+        """
+        if "top_n" in params:
+            top_n = params["top_n"]
+            integral = (isinstance(top_n, int) and not isinstance(top_n, bool)) or (
+                isinstance(top_n, float) and isfinite(top_n) and top_n.is_integer()
+            )
+            if not integral or int(top_n) < 1:
+                raise ValueError(f"top_n 必须为正整数，收到 {top_n!r}")
+        if "rebalance_freq" in params:
+            freq = params["rebalance_freq"]
+            if not isinstance(freq, str) or freq not in _REBALANCE_FREQS:
+                raise ValueError(
+                    f"rebalance_freq 必须为 {'/'.join(_REBALANCE_FREQS)} 之一，"
+                    f"收到 {freq!r}"
+                )
+        if params.get("beta") is not None:
+            beta = _require_finite_number(params["beta"], "beta")
+            if beta <= 0:
+                raise ValueError(
+                    f"beta 必须为正数，收到 {params['beta']!r}：β=0 会把缺失格"
+                    "激活为合格（NaN**0=1），负 β 会颠倒排序"
+                )
+        for key in ("class_weights", "exponents"):
+            mapping = params.get(key)
+            if mapping is None:
+                continue
+            if not isinstance(mapping, dict):
+                raise ValueError(f"{key} 必须为 {{类别: 数值}} 字典，收到 {mapping!r}")
+            has_positive = False
+            for cat, weight in mapping.items():
+                checked = _require_finite_number(weight, f"{key}.{cat}")
+                if checked < 0:
+                    raise ValueError(f"{key}.{cat} 必须为非负数，收到 {weight!r}")
+                has_positive = has_positive or checked > 0
+            if mapping and not has_positive:
+                raise ValueError(f"{key} 至少需要一个正项")
+        return params
 
 
 class StrategyMetrics(BaseModel):
