@@ -122,6 +122,41 @@ def calculate_icir(
     return icir
 
 
+def map_to_availability_dates(
+    series: pd.Series,
+    horizon: int,
+    trading_dates: pd.DatetimeIndex,
+) -> pd.Series:
+    """Map forward-return-derived statistics from label dates to availability dates.
+
+    A statistic labeled T (IC, RankIC, ICIR, ...) embeds the forward return
+    ``close[T+1+horizon] / close[T+1] - 1`` and is only realized horizon+1
+    trading days after T. Shifting the index to that realization date makes the
+    "synthesis only uses statistics already realized at date T" contract hold
+    for consumers that cut on ``index <= T`` (e.g. ICIRWeightedSynthesizer).
+
+    Sparse label sets (e.g. rebalance-date IC) must pass the full trading
+    calendar: the shift follows each label's position in the calendar, never a
+    mechanical skip of horizon+1 sparse samples. Labels without horizon+1
+    remaining calendar days have no realization date and are dropped.
+    """
+    if horizon <= 0:
+        raise ValueError("horizon must be positive.")
+    if not isinstance(series.index, pd.DatetimeIndex):
+        raise ValueError("series index must be a DatetimeIndex.")
+    if not isinstance(trading_dates, pd.DatetimeIndex):
+        raise ValueError("trading_dates must be a DatetimeIndex.")
+
+    positions = trading_dates.get_indexer(series.index)
+    known = pd.Series(positions, index=series.index)
+    target = known[known >= 0] + horizon + 1
+    in_range = target[target < len(trading_dates)]
+
+    shifted = series.loc[in_range.index].copy()
+    shifted.index = trading_dates[in_range.to_numpy()]
+    return shifted.sort_index()
+
+
 def _align_factor_and_returns(
     factor: pd.DataFrame,
     forward_returns: pd.DataFrame,

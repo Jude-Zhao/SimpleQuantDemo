@@ -13,6 +13,7 @@ from core.analysis.ic import (
     calculate_forward_returns,
     calculate_icir,
     calculate_rank_ic,
+    map_to_availability_dates,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "calculate_icir",
     "calculate_rank_ic",
     "find_correlated_pairs",
+    "map_to_availability_dates",
 ]

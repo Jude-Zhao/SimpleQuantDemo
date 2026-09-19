@@ -10,6 +10,7 @@ from core.analysis import (
     calculate_forward_returns,
     calculate_icir,
     calculate_rank_ic,
+    map_to_availability_dates,
 )
 from core.analysis.exceptions import AnalysisError
 from core.factors import MACDHistFactor
@@ -148,4 +149,39 @@ def test_ic_pipeline_with_example_data(sqlite_source) -> None:
     assert int(rank_ic.notna().sum()) > 0
     assert int(icir.notna().sum()) > 0
     assert np.isnan(ic.iloc[-1])
+
+
+def test_map_to_availability_dates_shifts_by_calendar_position() -> None:
+    trading = pd.bdate_range("2024-01-01", periods=10)
+    labels = pd.Series([1.0, 2.0, 3.0, 4.0], index=trading[[0, 2, 5, 8]], name="icir")
+
+    mapped = map_to_availability_dates(labels, horizon=2, trading_dates=trading)
+
+    # horizon+1 = 3 个交易日后收益实现：0→3、2→5、5→8；尾部不足的标签丢弃
+    assert list(mapped.index) == [trading[3], trading[5], trading[8]]
+    assert np.allclose(mapped.to_numpy(), [1.0, 2.0, 3.0])
+
+
+def test_map_to_availability_dates_sparse_rebalance_labels() -> None:
+    trading = pd.bdate_range("2024-01-01", periods=20)
+    rebalance = trading[[0, 5, 10, 15]]
+    labels = pd.Series([1.0, 2.0, 3.0, 4.0], index=rebalance)
+
+    mapped = map_to_availability_dates(labels, horizon=5, trading_dates=trading)
+
+    # 稀疏标签按完整日历位置右移 horizon+1 = 6 个交易日，绝非跳过 6 个稀疏样本
+    assert list(mapped.index) == [trading[6], trading[11], trading[16]]
+    assert np.allclose(mapped.to_numpy(), [1.0, 2.0, 3.0])
+
+
+def test_map_to_availability_dates_rejects_invalid_input() -> None:
+    trading = pd.bdate_range("2024-01-01", periods=5)
+    labels = pd.Series([1.0, 2.0], index=trading[:2])
+
+    with pytest.raises(ValueError, match="horizon"):
+        map_to_availability_dates(labels, horizon=0, trading_dates=trading)
+    with pytest.raises(ValueError, match="DatetimeIndex"):
+        map_to_availability_dates(
+            pd.Series([1.0, 2.0], index=[0, 1]), horizon=5, trading_dates=trading
+        )
 

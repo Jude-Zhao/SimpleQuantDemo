@@ -33,7 +33,13 @@ class ICIRWeightedSynthesizer(FactorSynthesizer):
         """Synthesize factor scores.
 
         For each factor date, only ICIR observations with dates <= factor date
-        are used. This keeps historical synthesis free of future ICIR leakage.
+        are used. The ``<=T`` cut is only free of future leakage when
+        ``icir_data`` is indexed by availability dates: forward-return-derived
+        statistics (IC, RankIC, ICIR) embed ``close[T+1+h]/close[T+1]-1`` and
+        are realized h+1 trading days after their label date T. Map
+        label-indexed series through ``core.analysis.map_to_availability_dates``
+        first; raw label-indexed ICIR reintroduces lookahead that the ``<=T``
+        cut cannot remove.
         """
         half_life = half_life_periods or self.half_life_periods
         if half_life <= 0:

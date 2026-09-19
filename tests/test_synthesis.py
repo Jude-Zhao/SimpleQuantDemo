@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from core.analysis import calculate_factor_ic, calculate_forward_returns, calculate_icir
+from core.analysis import (
+    calculate_factor_ic,
+    calculate_forward_returns,
+    calculate_icir,
+    map_to_availability_dates,
+)
 from core.factors import MACDHistFactor, Drawdown120Factor
 from core.synthesis import ICIRWeightedSynthesizer, calculate_decayed_icir_score
 from core.synthesis.exceptions import SynthesisError
@@ -132,4 +139,102 @@ def test_synthesis_pipeline_with_example_data(sqlite_source) -> None:
     assert synthesized.columns.tolist() == universe
     assert int(synthesized.notna().sum().sum()) > 0
     assert np.isfinite(synthesized.dropna(how="all").to_numpy()).any()
+
+
+def _three_sec_price_frame(dates: pd.DatetimeIndex) -> pd.DataFrame:
+    rows = []
+    specs = (("A.SH", 1.001, 0.0), ("B.SH", 0.999, 1.3), ("C.SH", 1.0005, 2.1))
+    for i, date in enumerate(dates):
+        for sec, drift, phase in specs:
+            rows.append({
+                "date": date,
+                "sec": sec,
+                "close": 100.0 * drift ** i * (1.0 + 0.01 * math.sin(i + phase)),
+            })
+    return pd.DataFrame(rows)
+
+
+def _static_panel(dates: pd.DatetimeIndex, universe: list[str]) -> dict[str, pd.DataFrame]:
+    # 常数截面因子：合成分只随 ICIR 权重变化，从而隔离价格扰动的影响路径
+    rows = {"f1": [1.0, 2.0, 3.0], "f2": [1.0, 3.0, 2.0]}
+    return {
+        name: pd.DataFrame(
+            {sec: [v] * len(dates) for sec, v in zip(universe, row)}, index=dates
+        )
+        for name, row in rows.items()
+    }
+
+
+def test_icir_synthesis_no_lookahead_after_availability_shift() -> None:
+    # 审计 F10 验收（日频）：修改 T 之后的价格不得改变 T 的已生成合成分
+    dates = pd.bdate_range("2024-01-01", periods=30)
+    universe = ["A.SH", "B.SH", "C.SH"]
+    panel = _static_panel(dates, universe)
+
+    def synthesize(prices: pd.DataFrame, shift: bool) -> pd.DataFrame:
+        forward = calculate_forward_returns(prices, horizon=5, universe=universe)
+        icir_data = {}
+        for name, factor in panel.items():
+            ic = calculate_factor_ic(factor, forward, min_observations=2)
+            icir = calculate_icir(ic, window=3, min_periods=3)
+            if shift:
+                icir = map_to_availability_dates(icir, horizon=5, trading_dates=dates)
+            icir_data[name] = icir
+        return ICIRWeightedSynthesizer(half_life_periods=20).synthesize(panel, icir_data)
+
+    base = _three_sec_price_frame(dates)
+    perturbed = base.copy()
+    # 各证券不同幅度扰动：统一倍数缩放只会让 forward 截面做仿射变换，
+    # pearson IC 对仿射不变，将无法暴露泄漏
+    for sec, mult in (("A.SH", 1.5), ("B.SH", 1.2), ("C.SH", 0.8)):
+        mask = (perturbed["sec"] == sec) & (perturbed["date"] >= dates[12])
+        perturbed.loc[mask, "close"] *= mult
+
+    # 契约路径：T=dates[10] 只用标签 k≤4 的 ICIR（收益已在 dates[10] 前实现）
+    assert np.isclose(
+        synthesize(base, shift=True).loc[dates[10], "B.SH"],
+        synthesize(perturbed, shift=True).loc[dates[10], "B.SH"],
+    )
+    # 旧拼法：标签日索引直接喂入，T 日权重内嵌 close[T+1..T+6] 的未来收益
+    assert not np.isclose(
+        synthesize(base, shift=False).loc[dates[10], "B.SH"],
+        synthesize(perturbed, shift=False).loc[dates[10], "B.SH"],
+    )
+
+
+def test_icir_synthesis_sparse_rebalance_no_lookahead() -> None:
+    # 审计 F10 验收（稀疏调仓 IC）：映射到收益实现日，而非稀疏样本机械右移
+    dates = pd.bdate_range("2024-01-01", periods=30)
+    universe = ["A.SH", "B.SH", "C.SH"]
+    panel = _static_panel(dates, universe)
+    rebalance_dates = dates[[0, 5, 10, 15, 20, 25]]
+
+    def synthesize(prices: pd.DataFrame, shift: bool) -> pd.DataFrame:
+        forward = calculate_forward_returns(prices, horizon=5, universe=universe)
+        icir_data = {}
+        for name, factor in panel.items():
+            ic = calculate_factor_ic(factor, forward, min_observations=2)
+            icir = calculate_icir(ic.reindex(rebalance_dates), window=2, min_periods=2)
+            if shift:
+                icir = map_to_availability_dates(icir, horizon=5, trading_dates=dates)
+            icir_data[name] = icir
+        return ICIRWeightedSynthesizer(half_life_periods=20).synthesize(panel, icir_data)
+
+    base = _three_sec_price_frame(dates)
+    perturbed = base.copy()
+    # 同上：各证券不同幅度，避免 forward 截面仿射变换被 pearson IC 抹平
+    for sec, mult in (("A.SH", 1.5), ("B.SH", 1.2), ("C.SH", 0.8)):
+        mask = (perturbed["sec"] == sec) & (perturbed["date"] >= dates[12])
+        perturbed.loc[mask, "close"] *= mult
+
+    # 契约路径：T=dates[11] 只用标签 {0,5} 的 ICIR，其收益已在 dates[11] 前实现
+    assert np.isclose(
+        synthesize(base, shift=True).loc[dates[11], "B.SH"],
+        synthesize(perturbed, shift=True).loc[dates[11], "B.SH"],
+    )
+    # 旧拼法：标签 10 的 ICIR 内嵌 dates[11..16] 收益，扰动后 T 日合成分可见变化
+    assert not np.isclose(
+        synthesize(base, shift=False).loc[dates[11], "B.SH"],
+        synthesize(perturbed, shift=False).loc[dates[11], "B.SH"],
+    )
 
