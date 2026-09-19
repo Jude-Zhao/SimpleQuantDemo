@@ -71,6 +71,8 @@ class SyncCapacityError(Exception):
 # 活动同步请求登记表（进程内锁保护；仅同进程保证互斥，不声称跨 worker 互斥）。
 # entry: {"task_id": str, "kind": "etf"|"macro", "resources": [{"key","period","start","end"}]}
 # 资源：ETF 为 (sec_code, period)；宏观为 frequency。区间半开，None 边界代表无穷。
+# F05: 注册方负责把实际写入范围换算为等价半开区间（日频 [start, end+1天)，
+# 月频 [起始月月初, 结束月次月月初)），保证锁口径与写入口径一致。
 _active_requests: list[dict] = []
 _activity_lock = threading.Lock()
 
@@ -82,6 +84,15 @@ def _interval_overlaps(a_start, a_end, b_start, b_end) -> bool:
     lo_b = b_start if b_start is not None else pd.Timestamp.min
     hi_b = b_end if b_end is not None else pd.Timestamp.max
     return lo_a < hi_b and lo_b < hi_a
+
+
+def _parse_sync_date(value: str, field_name: str) -> pd.Timestamp:
+    """F05: 同步入口日期解析——非法格式显式报错，归一化到当日零点。"""
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"{field_name} 日期格式非法：{value!r}") from e
+    return ts.normalize()
 
 
 def _find_conflict(kind: str, resources: list[dict]) -> dict | None:
@@ -186,10 +197,19 @@ def start_etf_sync(
     effective_start = start_date or default_start
     effective_end = end_date or pd.Timestamp.now().strftime("%Y-%m-%d")
 
-    start_ts = pd.Timestamp(effective_start)
-    end_ts = pd.Timestamp(effective_end)
+    start_ts = _parse_sync_date(effective_start, "start_date")
+    end_ts = _parse_sync_date(effective_end, "end_date")
+    if start_ts > end_ts:
+        raise ValueError(f"start_date 晚于 end_date：{effective_start} > {effective_end}")
+
+    # F05: 注册前统一资源范围——写入为闭区间 [start, end]，锁注册换算为等价
+    # 半开 [start, end+1天)，共享边界日/单日请求才判冲突；worker 收归一化
+    # 日期串，保证锁口径 == 写入口径。
+    effective_start = start_ts.strftime("%Y-%m-%d")
+    effective_end = end_ts.strftime("%Y-%m-%d")
+    write_end_exclusive = end_ts + pd.Timedelta(days=1)
     resources = [
-        {"key": sec, "period": "daily", "start": start_ts, "end": end_ts}
+        {"key": sec, "period": "daily", "start": start_ts, "end": write_end_exclusive}
         for sec in sec_codes
     ]
     max_tasks = get_config().sync.max_concurrent_tasks

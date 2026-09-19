@@ -182,6 +182,57 @@ def test_disjoint_ranges_allowed(db, monkeypatch):
     _wait_terminal(t1)
 
 
+def test_adjacent_ranges_conflict(db, monkeypatch):
+    """F05: 共享边界日——[1/2,1/3] 与 [1/3,1/4] 实际都写 1/3，必须判冲突。
+
+    旧实现注册 [start, end) 半开区间，两请求被误判不重叠而同时放行。
+    """
+    _patch_env(db, monkeypatch)
+    router = _RoutingSource()
+    blocker_a = _BlockingSource(_rows("A.SH", ["2024-01-02", "2024-01-03"]))
+    router.routes[("A.SH", "2024-01-02", "daily")] = blocker_a
+    monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
+
+    t1 = ss.start_etf_sync(
+        db=db, sec_codes=["A.SH"], start_date="2024-01-02", end_date="2024-01-03"
+    )
+    try:
+        assert blocker_a.entered.wait(timeout=5)
+        with pytest.raises(ss.SyncConflictError):
+            ss.start_etf_sync(
+                db=db, sec_codes=["A.SH"], start_date="2024-01-03", end_date="2024-01-04"
+            )
+    finally:
+        blocker_a.release.set()
+    _wait_terminal(t1)
+
+
+def test_single_day_request_conflicts(db, monkeypatch):
+    """F05: 单日请求 [1/2,1/2] 注册为 [1/2,1/3) 非空区间，与重叠请求冲突。
+
+    旧实现下 start==end 注册为空半开区间，与任何请求（含自身重复提交）
+    都判"不冲突"。
+    """
+    _patch_env(db, monkeypatch)
+    router = _RoutingSource()
+    blocker = _BlockingSource(_rows("A.SH", ["2024-01-02"]))
+    router.routes[("A.SH", "2024-01-02", "daily")] = blocker
+    monkeypatch.setattr(ss, "_get_primary_source", lambda: router)
+
+    t1 = ss.start_etf_sync(
+        db=db, sec_codes=["A.SH"], start_date="2024-01-02", end_date="2024-01-02"
+    )
+    try:
+        assert blocker.entered.wait(timeout=5)
+        with pytest.raises(ss.SyncConflictError):
+            ss.start_etf_sync(
+                db=db, sec_codes=["A.SH"], start_date="2024-01-02", end_date="2024-01-02"
+            )
+    finally:
+        blocker.release.set()
+    _wait_terminal(t1)
+
+
 def test_batch_conflict_rejects_whole_request(db, monkeypatch):
     """批量请求任一资源冲突则整体拒绝：不创建新 task、不拆分静默执行。"""
     _patch_env(db, monkeypatch)
@@ -302,3 +353,80 @@ def test_written_empty_on_failure(db, monkeypatch):
     assert result["written_start"] == ""
     assert result["written_end"] == ""
     assert result["rows"] == 0
+
+
+# ── F05: 注册前校验与宏观月频锁口径 ───────────────────────────────────
+
+
+def test_sync_date_validation_rejected(db, monkeypatch):
+    """F05: 注册前校验——非法日期格式或 start>end 报 ValueError，
+    不登记活动、不创建任务。"""
+    _patch_env(db, monkeypatch)
+    tasks_before = set(ss._tasks)
+
+    with pytest.raises(ValueError):
+        ss.start_etf_sync(
+            db=db, sec_codes=["A.SH"], start_date="not-a-date", end_date="2024-01-31"
+        )
+    with pytest.raises(ValueError):
+        ss.start_etf_sync(
+            db=db, sec_codes=["A.SH"], start_date="2024-01-10", end_date="2024-01-01"
+        )
+
+    assert ss._active_requests == []
+    assert set(ss._tasks) == tasks_before
+
+
+def _patch_macro_worker(monkeypatch):
+    import webapp.services.macro_service as ms
+
+    monkeypatch.setattr(ms, "_run_macro_sync", lambda *args, **kwargs: None)
+
+
+def test_macro_monthly_same_month_conflict(db, monkeypatch):
+    """F05: 月频按整月注册——[1/2,1/3] 与 [1/20,1/21] 实际都写一月，判冲突。"""
+    _patch_env(db, monkeypatch)
+    _patch_macro_worker(monkeypatch)
+    from webapp.services.macro_service import start_macro_sync
+
+    task1 = start_macro_sync(
+        db=db, frequency="monthly", start_date="2024-01-02", end_date="2024-01-03"
+    )
+    try:
+        with pytest.raises(ss.SyncConflictError):
+            start_macro_sync(
+                db=db, frequency="monthly", start_date="2024-01-20", end_date="2024-01-21"
+            )
+    finally:
+        ss.release_sync_activity(task1.task_id)
+
+
+def test_macro_monthly_disjoint_months_allowed(db, monkeypatch):
+    """F05: 真正不相交的月份仍可并行同步。"""
+    _patch_env(db, monkeypatch)
+    _patch_macro_worker(monkeypatch)
+    from webapp.services.macro_service import start_macro_sync
+
+    task1 = start_macro_sync(
+        db=db, frequency="monthly", start_date="2024-01-02", end_date="2024-01-03"
+    )
+    task2 = start_macro_sync(
+        db=db, frequency="monthly", start_date="2024-03-05", end_date="2024-03-06"
+    )
+    ss.release_sync_activity(task1.task_id)
+    ss.release_sync_activity(task2.task_id)
+
+
+def test_macro_sync_date_validation_rejected(db, monkeypatch):
+    """F05: 宏观入口同样校验——月频 start>end、日频非法格式均拒绝。"""
+    _patch_env(db, monkeypatch)
+    _patch_macro_worker(monkeypatch)
+    from webapp.services.macro_service import start_macro_sync
+
+    with pytest.raises(ValueError):
+        start_macro_sync(
+            db=db, frequency="monthly", start_date="2024-02-01", end_date="2024-01-31"
+        )
+    with pytest.raises(ValueError):
+        start_macro_sync(db=db, frequency="daily", start_date="bad-date", end_date=None)
+    assert ss._active_requests == []

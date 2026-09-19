@@ -89,6 +89,9 @@ def sync_macro(req: MacroSyncRequest, db: Session = Depends(get_db)):
     except SyncCapacityError as e:
         # A10: 并发任务满容量 → 429
         raise HTTPException(status_code=429, detail=str(e))
+    except ValueError as e:
+        # F05: 注册前校验（日期格式/区间）失败 → 400
+        raise HTTPException(status_code=400, detail=str(e))
     return _task_to_response(task)
 
 

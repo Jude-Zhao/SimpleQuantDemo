@@ -165,6 +165,41 @@ def get_macro_task(task_id: str) -> MacroSyncTask | None:
         return _macro_tasks.get(task_id)
 
 
+def _macro_sync_resource(frequency: str, start_date: str | None, end_date: str | None) -> dict:
+    """F05: 构造与实际写入口径一致的锁资源区间（注册前调用）。
+
+    日频写入闭区间 [start, end] → 注册半开 [start, end+1天)；月频实际按
+    整月写入（含结束月）→ 注册半开 [起始月月初, 结束月次月月初)。None
+    边界代表无界，保持 None。先校验日期格式与 start<=end。
+    """
+    from webapp.services.sync_service import _parse_sync_date
+
+    if frequency == "monthly":
+        try:
+            start_p = pd.Period(start_date, freq="M") if start_date else None
+            end_p = pd.Period(end_date, freq="M") if end_date else None
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"日期格式非法：{e}") from e
+        if start_p is not None and end_p is not None and start_p > end_p:
+            raise ValueError(f"start_date 晚于 end_date：{start_date} > {end_date}")
+        return {
+            "key": frequency,
+            "period": "",
+            "start": start_p.to_timestamp() if start_p is not None else None,
+            "end": (end_p + 1).to_timestamp() if end_p is not None else None,
+        }
+    start_ts = _parse_sync_date(start_date, "start_date") if start_date else None
+    end_ts = _parse_sync_date(end_date, "end_date") if end_date else None
+    if start_ts is not None and end_ts is not None and start_ts > end_ts:
+        raise ValueError(f"start_date 晚于 end_date：{start_date} > {end_date}")
+    return {
+        "key": frequency,
+        "period": "",
+        "start": start_ts,
+        "end": end_ts + pd.Timedelta(days=1) if end_ts is not None else None,
+    }
+
+
 def start_macro_sync(
     db: Session,
     frequency: str = "daily",
@@ -181,14 +216,8 @@ def start_macro_sync(
     )
 
     task_id = str(uuid.uuid4())
-    resources = [
-        {
-            "key": frequency,
-            "period": "",
-            "start": pd.Timestamp(start_date) if start_date else None,
-            "end": pd.Timestamp(end_date) if end_date else None,
-        }
-    ]
+    # F05: 注册前把写入范围换算为与锁一致的半开区间（月频按整月）
+    resources = [_macro_sync_resource(frequency, start_date, end_date)]
     max_tasks = get_config().sync.max_concurrent_tasks
     # A10: 宏观资源为 frequency；锁内原子检查容量/冲突并登记
     register_sync_activity(task_id, "macro", resources, max_tasks)
