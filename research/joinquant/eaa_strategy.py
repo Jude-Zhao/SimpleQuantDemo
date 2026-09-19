@@ -294,23 +294,35 @@ def market_open(context):
 
 
 def _rebalance(context, target_weights):
-    """调到目标权重；买入金额按剩余可用现金封顶（预留 0.5% 缓冲）避免资金不足拒单。
+    """调到目标权重（F09：order_target_value 的 value 是成交后目标持仓市值，
+    含已有持仓，不是买入增量；可用现金只约束新增买入）。
 
-    嵌套循环顺序：先平掉不在目标里的旧仓（释放资金），再逐笔买入目标标的。
+    执行两遍：一、先执行全部减仓——不在目标的旧仓清零 + 目标内超配减持
+    （当前市值 > 目标市值），释放资金；二、按增量买入——buy_need =
+    max(目标市值 - 当前市值, 0)，以可用现金（预留 0.5% 缓冲）封顶，下单
+    目标 = 当前市值 + 实际可买增量。可用现金逐笔实时读取，真实订单成功/
+    失败后自动更新后续额度。
     """
-    target_set = set(target_weights.keys())
-    current = list(context.portfolio.positions.keys())
+    # 冻结本次调仓的目标总市值：后续卖出释放现金不放大目标
+    total_value = context.portfolio.total_value
+    target_values = {sec: total_value * w for sec, w in target_weights.items()}
+    positions = context.portfolio.positions
 
-    # 一、先卖出不在目标持仓中的标的，释放资金
-    for sec in current:
-        if sec not in target_set and context.portfolio.positions[sec].total_amount > 0:
-            order_target_value(sec, 0)
+    # 一、全部减仓（含目标内超配），释放资金
+    for sec, pos in list(positions.items()):
+        if pos.total_amount <= 0:
+            continue
+        target_value = target_values.get(sec, 0.0)
+        if pos.value > target_value:
+            order_target_value(sec, target_value)
 
-    # 二、买入目标标的：金额 = 目标市值，但以剩余可用现金 * 0.995 封顶
-    for sec, w in target_weights.items():
-        target_value = context.portfolio.total_value * w
-        available = context.portfolio.available_cash
-        # 目标金额超过可用现金（含缓冲）时，压到可用现金以内，避免资金不足拒单
-        order_value = min(target_value, available * 0.995)
-        if order_value > 100:
-            order_target_value(sec, order_value)
+    # 二、增量买入：只补 max(目标-当前, 0) 的缺口
+    for sec, target_value in target_values.items():
+        pos = positions.get(sec)
+        current_value = pos.value if pos is not None and pos.total_amount > 0 else 0.0
+        buy_need = target_value - current_value
+        if buy_need <= 0:
+            continue
+        allowed_buy = min(buy_need, context.portfolio.available_cash * 0.995)
+        if allowed_buy > 0:
+            order_target_value(sec, current_value + allowed_buy)
