@@ -87,6 +87,19 @@ def test_mfi_meta():
     assert cls.direction == "positive"
 
 
+def test_drawdown_120_meta():
+    """F22：名称必须如实反映窗口语义——峰值基准含窗口外历史，不得再宣称
+    纯 120 日窗口内最大回撤；定义（峰值起点=传入行情首日）写入 description。"""
+    cls = get_factor_class("drawdown_120")
+    assert cls is not None
+    assert cls.display_name == "近120日相对历史峰值回撤"
+    assert cls.display_name != "120日最大回撤"
+    assert cls.category == "波动"
+    assert cls.direction == "positive"
+    assert "行情首日" in cls.description  # 峰值起点已记录
+    assert "cummax(自数据首日)" in cls.formula
+
+
 def test_factor_formula_present():
     for name in list_factor_names():
         cls = get_factor_class(name)
