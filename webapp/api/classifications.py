@@ -49,13 +49,21 @@ def get_classification(db: Session = Depends(get_db)):
 @router.post("/rules", response_model=ClassificationRuleResponse)
 def create_rule_endpoint(rule: ClassificationRuleCreate, db: Session = Depends(get_db)):
     """Create a new classification rule."""
-    return create_rule(db, rule)
+    try:
+        return create_rule(db, rule)
+    except ValueError as e:
+        # F14: 非法 config 结构写库前拒绝
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/rules/{rule_id}", response_model=ClassificationRuleResponse)
 def update_rule_endpoint(rule_id: int, update: ClassificationRuleUpdate, db: Session = Depends(get_db)):
     """Update a classification rule."""
-    rule = update_rule(db, rule_id, update)
+    try:
+        rule = update_rule(db, rule_id, update)
+    except ValueError as e:
+        # F14: 非法 config 结构写库前拒绝，旧规则保持原值
+        raise HTTPException(status_code=400, detail=str(e))
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
     return rule

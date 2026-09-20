@@ -6,7 +6,7 @@ import math
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
 
 def _ensure_finite(value: float | None) -> float | None:
@@ -25,8 +25,20 @@ class ClassificationRuleBase(BaseModel):
     priority: int = 100
 
 
+RULE_TYPES = ("manual", "by_field", "by_range")
+
+
+def _check_rule_type(value: str) -> str:
+    if value not in RULE_TYPES:
+        raise ValueError(f"rule_type 必须为 {'/'.join(RULE_TYPES)} 之一，收到 {value!r}")
+    return value
+
+
 class ClassificationRuleCreate(ClassificationRuleBase):
-    pass
+    @field_validator("rule_type")
+    @classmethod
+    def _rule_type_valid(cls, value: str) -> str:
+        return _check_rule_type(value)
 
 
 class ClassificationRuleUpdate(BaseModel):
@@ -37,6 +49,32 @@ class ClassificationRuleUpdate(BaseModel):
     is_active: bool | None = None
     priority: int | None = None
 
+    # F14: field_validator 仅在字段被提交时触发——区分"未提交"（保持原值）
+    # 与"提交 null"（拒绝）。非空列（rule_name/category_key/rule_type/config）
+    # 一旦被显式置 null，轻则 500、重则 config=null 持久化后所有分类查询崩溃。
+    @field_validator("rule_name", "category_key")
+    @classmethod
+    def _text_field_not_null(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            raise ValueError(f"{info.field_name} 不能为 null；未提交则保持原值，请省略该字段")
+        return value
+
+    @field_validator("rule_type")
+    @classmethod
+    def _rule_type_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            raise ValueError("rule_type 不能为 null；未提交则保持原值，请省略该字段")
+        return _check_rule_type(value)
+
+    @field_validator("config")
+    @classmethod
+    def _config_not_null(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            raise ValueError(
+                "config 不能为 null：未提交则保持原值，修改请提交完整配置字典"
+            )
+        return value
+
 
 class ClassificationRuleResponse(ClassificationRuleBase):
     model_config = ConfigDict(from_attributes=True)
@@ -44,6 +82,9 @@ class ClassificationRuleResponse(ClassificationRuleBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    # F14: 遗留损坏记录的 config 可能为 null——读模型容忍以便管理页可访问，
+    # 写模型（Create）仍拒绝 null。
+    config: dict[str, Any] | None = None
 
 
 class ClassificationResult(BaseModel):

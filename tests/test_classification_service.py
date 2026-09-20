@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from webapp.models.classification import ClassificationRule
 from webapp.models.database import Base
 from webapp.models.universe import UniverseItem
 from webapp.schemas.classification import ClassificationRuleCreate, ClassificationRuleUpdate
 from webapp.services.classification_service import (
+    _validate_config,
     classify_universe,
     create_rule,
     delete_rule,
+    ensure_classification,
     get_rule,
     list_rules,
     update_rule,
@@ -209,3 +213,156 @@ def test_classify_multiple_category_keys(test_db):
 
     assert "asset" in by_code["511010.SH"].categories
     assert by_code["511010.SH"].categories["asset"] == "固收"
+
+
+# ── F14: 非法分类配置写库前拒绝 + 遗留坏记录读路径隔离 ─────────────────
+
+
+def test_update_rejects_explicit_null_fields():
+    """提交 null 与省略字段必须区分：显式 null 一律 ValidationError（422）。"""
+    with pytest.raises(ValidationError):
+        ClassificationRuleUpdate(config=None)
+    with pytest.raises(ValidationError):
+        ClassificationRuleUpdate(rule_name=None)
+    with pytest.raises(ValidationError):
+        ClassificationRuleUpdate(category_key=None)
+    with pytest.raises(ValidationError):
+        ClassificationRuleUpdate(rule_type=None)
+    # 省略字段不触发校验（部分更新语义保持）
+    update = ClassificationRuleUpdate(priority=1)
+    assert update.config is None and update.rule_name is None
+
+
+def test_create_and_update_reject_unknown_rule_type():
+    with pytest.raises(ValidationError):
+        ClassificationRuleCreate(
+            rule_name="x", category_key="size", rule_type="magic", config={},
+        )
+    with pytest.raises(ValidationError):
+        ClassificationRuleUpdate(rule_type="magic")
+
+
+def test_validate_config_rejects_bad_shapes():
+    """三类已证实崩溃形态 + 未知 rule_type 一律拒绝；合法形态放行。"""
+    bad = [
+        ("manual", None),                                   # config=null（审计主证据）
+        ("manual", "510300.SH"),                            # 非 dict
+        ("manual", {"sec_codes": None}),                    # list(None) 崩溃
+        ("manual", {"sec_codes": "510300.SH"}),             # 字符串非列表
+        ("manual", {"sec_codes": [1]}),                     # 元素非字符串
+        ("by_range", {"field": "f", "min": "abc"}),         # float() 崩溃
+        ("by_range", {"field": "f", "min": True}),          # bool 伪装
+        ("by_range", {"field": "f", "min": 5, "max": 5}),   # 空区间
+        ("magic", {}),                                      # 未知类型
+    ]
+    for rule_type, config in bad:
+        with pytest.raises(ValueError):
+            _validate_config(rule_type, config)
+
+    ok = [
+        ("manual", {}),
+        ("manual", {"sec_codes": [], "category_value": "大盘"}),
+        ("by_field", {"field": "category", "value": "宽基"}),
+        ("by_range", {"field": "fund_size", "min": 500}),
+        ("by_range", {"field": "fund_size", "max": 10}),
+        ("by_range", {"field": "fund_size", "min": 1, "max": 2}),
+    ]
+    for rule_type, config in ok:
+        _validate_config(rule_type, config)
+
+
+def test_update_type_change_with_incompatible_config_rejected(test_db):
+    """rule_type 变更后按新类型重新校验 config：旧 config 携带对新类型
+    非法的键（min="abc" 对 manual 无害、对 by_range 崩溃）→ 拒绝，旧规则原样保留。"""
+    created = create_rule(test_db, ClassificationRuleCreate(
+        rule_name="手动规则", category_key="size", rule_type="manual",
+        config={"sec_codes": ["510300.SH"], "category_value": "大盘", "min": "abc"},
+    ))
+    with pytest.raises(ValueError):
+        update_rule(test_db, created.id, ClassificationRuleUpdate(rule_type="by_range"))
+
+    rule = get_rule(test_db, created.id)
+    assert rule.rule_type == "manual"
+    assert rule.config == {
+        "sec_codes": ["510300.SH"], "category_value": "大盘", "min": "abc",
+    }
+
+
+def test_update_config_only_validated_against_existing_type(test_db):
+    """只改 config 时按数据库中的 rule_type 校验合并结果。"""
+    created = create_rule(test_db, ClassificationRuleCreate(
+        rule_name="区间规则", category_key="size", rule_type="by_range",
+        config={"field": "fund_size", "min": 100, "category_value": "大盘"},
+    ))
+    with pytest.raises(ValueError):
+        update_rule(test_db, created.id, ClassificationRuleUpdate(config={"min": "abc"}))
+
+    rule = get_rule(test_db, created.id)
+    assert rule.config["min"] == 100
+
+
+def test_partial_update_allows_repair_of_legacy_bad_config(test_db):
+    """遗留 config=null 的规则：只改名称不被阻塞；补交合法 config 即自愈。"""
+    test_db.add(ClassificationRule(
+        rule_name="遗留坏规则", category_key="size", rule_type="manual", config=None,
+    ))
+    test_db.commit()
+    rule_id = test_db.query(ClassificationRule).filter_by(rule_name="遗留坏规则").one().id
+
+    repaired = update_rule(test_db, rule_id, ClassificationRuleUpdate(rule_name="已修复"))
+    assert repaired.rule_name == "已修复"
+
+    fixed = update_rule(test_db, rule_id, ClassificationRuleUpdate(
+        config={"category_value": "大盘", "sec_codes": ["510300.SH"]},
+    ))
+    assert fixed.config == {"category_value": "大盘", "sec_codes": ["510300.SH"]}
+    by_code = {r.sec_code: r for r in classify_universe(test_db)}
+    assert by_code["510300.SH"].categories.get("size") == "大盘"
+
+
+def test_classify_universe_isolates_legacy_bad_rules(test_db):
+    """遗留坏规则（config=null / sec_codes=null / min 非数值）只被跳过，
+    classify_universe 不崩，好规则照常生效。"""
+    create_rule(test_db, ClassificationRuleCreate(
+        rule_name="好规则", category_key="size", rule_type="manual",
+        config={"sec_codes": ["510300.SH"], "category_value": "大盘"},
+        priority=10,
+    ))
+    test_db.add(ClassificationRule(
+        rule_name="坏config", category_key="size", rule_type="manual", config=None,
+    ))
+    test_db.add(ClassificationRule(
+        rule_name="坏sec_codes", category_key="size", rule_type="manual",
+        config={"sec_codes": None, "category_value": "中盘"},
+    ))
+    test_db.add(ClassificationRule(
+        rule_name="坏范围", category_key="size_bucket", rule_type="by_range",
+        config={"field": "fund_size", "min": "abc", "category_value": "大规模"},
+    ))
+    test_db.commit()
+
+    results = classify_universe(test_db)
+    by_code = {r.sec_code: r for r in results}
+    assert by_code["510300.SH"].categories.get("size") == "大盘"
+    assert all(not r.categories for r in by_code.values() if r.sec_code != "510300.SH")
+
+
+def test_ensure_classification_tolerates_legacy_bad_rules(test_db):
+    """ensure_classification 遇到遗留坏规则不崩，匹配项自愈重建 sec_codes。"""
+    test_db.add(ClassificationRule(
+        rule_name="坏config", category_key="size", rule_type="manual", config=None,
+    ))
+    test_db.add(ClassificationRule(
+        rule_name="坏sec_codes", category_key="size", rule_type="manual",
+        config={"sec_codes": None, "category_value": "大盘"},
+    ))
+    test_db.commit()
+
+    ensure_classification(test_db, "510300.SH", {"size": "大盘"})
+
+    healed = (
+        test_db.query(ClassificationRule)
+        .filter(ClassificationRule.rule_name == "坏sec_codes")
+        .one()
+    )
+    assert healed.config["sec_codes"] == ["510300.SH"]

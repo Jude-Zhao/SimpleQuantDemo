@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from webapp.main import app
+from webapp.models.classification import ClassificationRule
+from webapp.models.database import SessionLocal
 from webapp.schemas.classification import CategoryConstraint, OptimizationConstraints
 
 pytestmark = pytest.mark.usefixtures("webapp_clean_state")
@@ -322,3 +324,89 @@ def test_update_constraints_allows_infeasible_config():
     assert item["max_weight"] == 0.1
     assert item["min_count"] == 5
     assert item["max_count"] == 1
+
+
+# ── F14: 非法分类配置写库前拒绝 + 遗留坏记录不阻塞管理页 ────────────────
+
+
+def test_update_rule_rejects_null_config():
+    """PUT config=null → 422（审计主证据：持久化后 classify_universe 全局崩）。"""
+    resp = client.post("/api/classifications/rules", json={
+        "rule_name": "规则", "category_key": "size", "rule_type": "manual",
+        "config": {"sec_codes": [], "category_value": "大盘"},
+    })
+    rule_id = resp.json()["id"]
+
+    response = client.put(f"/api/classifications/rules/{rule_id}", json={"config": None})
+    assert response.status_code == 422
+
+    rules = client.get("/api/classifications/rules").json()
+    target = next(r for r in rules if r["id"] == rule_id)
+    assert target["config"] == {"sec_codes": [], "category_value": "大盘"}
+
+
+def test_create_rule_rejects_invalid_config():
+    for config in (
+        {"sec_codes": None},                                # list(None) 崩溃
+        {"sec_codes": "510300.SH"},                         # 字符串非列表
+        {"field": "fund_size", "min": "abc"},               # float() 崩溃
+        {"field": "fund_size", "min": 5, "max": 5},         # 空区间
+    ):
+        response = client.post("/api/classifications/rules", json={
+            "rule_name": "坏规则", "category_key": "size", "rule_type": "manual",
+            "config": config,
+        } if "sec_codes" in config else {
+            "rule_name": "坏规则", "category_key": "size", "rule_type": "by_range",
+            "config": config,
+        })
+        assert response.status_code == 400, config
+
+    # 合法配置不受影响
+    response = client.post("/api/classifications/rules", json={
+        "rule_name": "好规则", "category_key": "size", "rule_type": "manual",
+        "config": {"sec_codes": [], "category_value": "大盘"},
+    })
+    assert response.status_code == 200
+
+
+def test_update_rule_rejects_invalid_config_keeps_old():
+    resp = client.post("/api/classifications/rules", json={
+        "rule_name": "规则", "category_key": "size", "rule_type": "manual",
+        "config": {"sec_codes": ["510300.SH"], "category_value": "大盘"},
+    })
+    rule_id = resp.json()["id"]
+
+    response = client.put(f"/api/classifications/rules/{rule_id}", json={
+        "config": {"sec_codes": None},
+    })
+    assert response.status_code == 400
+
+    rules = client.get("/api/classifications/rules").json()
+    target = next(r for r in rules if r["id"] == rule_id)
+    assert target["config"] == {"sec_codes": ["510300.SH"], "category_value": "大盘"}
+
+
+def test_rules_endpoints_survive_legacy_bad_config():
+    """含遗留坏记录时：规则列表/分类视图/应用接口全部可用（管理页可定位修复）。"""
+    db = SessionLocal()
+    try:
+        db.add(ClassificationRule(
+            rule_name="坏config", category_key="size", rule_type="manual", config=None,
+        ))
+        db.add(ClassificationRule(
+            rule_name="坏范围", category_key="size_bucket", rule_type="by_range",
+            config={"field": "fund_size", "min": "abc", "category_value": "大规模"},
+        ))
+        db.commit()
+
+        rules = client.get("/api/classifications/rules")
+        assert rules.status_code == 200  # 管理页数据源不炸
+        bad = next(r for r in rules.json() if r["rule_name"] == "坏config")
+        assert bad["config"] is None  # 读模型容忍 null，前端可打开编辑修复
+
+        assert client.get("/api/classifications").status_code == 200
+        assert client.post("/api/classifications/apply").status_code == 200
+    finally:
+        db.query(ClassificationRule).delete()
+        db.commit()
+        db.close()
