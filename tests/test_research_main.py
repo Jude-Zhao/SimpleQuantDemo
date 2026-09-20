@@ -7,12 +7,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from core.backtest import BacktestConfig
 from core.backtest.targets import build_target_weights
+from core.calendar import generate_rebalance_dates
 from research.config import ResearchConfig, default_research_config
 from research.main import (
     _build_composite,
+    _evaluate_factors,
     _slice_backtest_window,
     calculate_backtest_summary,
     run_research,
@@ -242,3 +245,81 @@ def test_build_composite_filters_disabled_category_issues(monkeypatch):
     )
     composite, issues = _build_composite(price_data, secs, (), config)
     assert (issues["category"] == "momentum").all()
+
+
+# ── F20: IC 采样网格锚定评估区间（预热长度不影响相位）───────────────────
+
+
+def _ic_schedule_frame(
+    master: pd.DatetimeIndex, start: int, end: int, secs: list[str]
+) -> pd.DataFrame:
+    """构造长表价格数据：价格由主日历位置决定，预热前缀不改变评估日价格。
+
+    各证券斜率不同（1.0/1.5/2.0），保证前瞻收益有截面区分度、IC 可定义。
+    """
+    rows = []
+    for pos in range(start, end):
+        for k, s in enumerate(secs):
+            close = 100.0 + pos * (1.0 + 0.5 * k)
+            rows.append(
+                {"date": master[pos], "sec": s, "open": close, "high": close,
+                 "low": close, "close": close, "volume": 1000.0, "amount": 1e6}
+            )
+    return pd.DataFrame(rows)
+
+
+def _ic_schedule_panel(price_data: pd.DataFrame, secs: list[str]) -> dict[str, pd.DataFrame]:
+    dates = pd.DatetimeIndex(price_data["date"].unique()).sort_values()
+    factor = pd.DataFrame({s: float(k + 1) for k, s in enumerate(secs)}, index=dates)
+    return {"sample": factor}
+
+
+def test_ic_dates_anchor_at_eval_start_with_warmup():
+    """F20 审计证据：预热 2 个交易日时首次 IC 采样必须是评估区间首日。
+
+    旧行为：网格在全量（含预热）索引上生成后过滤 ≥ eval_start，
+    首次 IC 落在 master[5]；回测首决策日是 master[4]（master 从 0 起算）。
+    """
+    master = pd.bdate_range("2024-01-02", periods=15)
+    secs = ["A", "B", "C"]
+    price_data = _ic_schedule_frame(master, 2, 15, secs)
+    config = ResearchConfig(ic_min_observations=3, icir_window=3, icir_min_periods=2)
+    eval_start = master[2]
+
+    ic, _, _, _ = _evaluate_factors(
+        price_data, _ic_schedule_panel(price_data, secs), config, eval_start=eval_start
+    )
+
+    ic_idx = ic["sample"].index
+    assert len(ic_idx) >= 2
+    assert ic_idx[0] == eval_start
+    # IC 采样日是回测网格的前缀（尾部不足前瞻期的网格点无 IC 属预期）
+    dates = pd.DatetimeIndex(price_data["date"].unique()).sort_values()
+    backtest_dates = generate_rebalance_dates(dates[dates >= eval_start], "5d")
+    assert list(ic_idx) == list(backtest_dates[: len(ic_idx)])
+
+
+@pytest.mark.parametrize("freq", ["5d", "weekly", "monthly"])
+def test_ic_schedule_invariant_to_warmup_length(freq):
+    """F20 验收：预热增加 0–4 个交易日，同一评估区间的 IC/RankIC 采样序列
+    逐值不变，且首个采样日=评估区间首日；周/月频首周期边界同样锚定。"""
+    master = pd.bdate_range("2024-01-02", periods=25)
+    secs = ["A", "B", "C"]
+    eval_start = master[5]  # 周二——周/月频首周期均为残期，边界敏感
+
+    baseline = None
+    for warmup in range(5):
+        price_data = _ic_schedule_frame(master, 5 - warmup, 25, secs)
+        config = ResearchConfig(
+            rebalance_freq=freq, ic_min_observations=3, icir_window=3, icir_min_periods=2
+        )
+        ic, rank_ic, _, _ = _evaluate_factors(
+            price_data, _ic_schedule_panel(price_data, secs), config, eval_start=eval_start
+        )
+
+        assert ic["sample"].index[0] == eval_start, f"warmup={warmup}"
+        if baseline is None:
+            baseline = (ic["sample"], rank_ic["sample"])
+        else:
+            pd.testing.assert_series_equal(ic["sample"], baseline[0])
+            pd.testing.assert_series_equal(rank_ic["sample"], baseline[1])

@@ -102,13 +102,19 @@ def _evaluate_factors(
         horizon=config.forward_return_horizon,
         universe=list(factor_panel[next(iter(factor_panel))].columns) if factor_panel else [],
     )
+    ic_trading_dates = get_trading_dates(price_data).intersection(forward_returns.index)
+    if eval_start is not None:
+        # F20: 先裁剪到评估区间再生成网格——锚定评估区间首日，与
+        # build_target_weights 的回测网格同源（回测窗口同样先裁剪再分块）。
+        # 预热行情仍用于因子与前瞻收益计算，但其长度不再影响 IC 采样相位；
+        # 旧实现"全量窗口生成网格后过滤 ≥ eval_start"在预热长度非调仓周期
+        # 整数倍时，IC 采样日与回测决策日整体错位。
+        ic_trading_dates = ic_trading_dates[ic_trading_dates >= eval_start]
     ic_dates = generate_rebalance_dates(
-        trading_dates=get_trading_dates(price_data).intersection(forward_returns.index),
+        trading_dates=ic_trading_dates,
         rebalance_freq=config.rebalance_freq,
         rebalance_day=0,
     )
-    if eval_start is not None:
-        ic_dates = ic_dates[ic_dates >= eval_start]
 
     ic_data: dict[str, pd.Series] = {}
     rank_ic_data: dict[str, pd.Series] = {}
