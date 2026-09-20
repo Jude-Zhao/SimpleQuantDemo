@@ -206,6 +206,10 @@ def get_returns_ranking(
 ):
     """Rank universe ETFs by trailing ``days``-day return.
 
+    ``days`` return periods are computed from ``days + 1`` price endpoints;
+    when history is shorter, the response ``days`` reports the actual
+    observation periods instead of pretending to a full window.
+
     ``momentum`` is the top-10 highest-returning ETFs (buy-winners logic),
     ``reversal`` the bottom-10 lowest-returning ETFs (buy-losers logic).
     """
@@ -224,7 +228,9 @@ def get_returns_ranking(
     if len(piv) < 2:
         return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
 
-    window = piv.iloc[-days:]
+    # N 个日收益需要 N+1 个价格端点（F16）：取 days+1 行，避免少算一期。
+    # 端点缺失的证券得 NaN 并从榜中剔除，不回填旧价偷换窗口。
+    window = piv.iloc[-(days + 1):]
     if len(window) < 2:
         return ReturnRankingResponse(days=days, as_of="", momentum=[], reversal=[])
 
@@ -243,7 +249,10 @@ def get_returns_ranking(
     momentum = [item(c, v) for c, v in ret.head(10).items()]
     reversal = [item(c, v) for c, v in ret.tail(10).sort_values(ascending=True).items()]
 
-    return ReturnRankingResponse(days=days, as_of=as_of, momentum=momentum, reversal=reversal)
+    # 历史不足 days+1 个端点时按实际观察期数报告（前端 hint 直接展示该值）
+    return ReturnRankingResponse(
+        days=min(days, len(window) - 1), as_of=as_of, momentum=momentum, reversal=reversal
+    )
 
 
 @router.get("/recent-runs", response_model=list[RecentRunItem])
