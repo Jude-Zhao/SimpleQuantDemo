@@ -13,7 +13,7 @@ from core.analysis.ic import calculate_forward_returns, calculate_rank_ic
 from core.factors.config import list_factor_categories
 from webapp.models.database import get_db, utc_now
 from webapp.models.strategy_run import StrategyRun
-from webapp.services.data_service import get_etf_price, get_etf_list
+from webapp.services.data_service import get_data_revision, get_etf_price, get_etf_list
 from webapp.services.eaa_faa import build_category_factors, category_score_from_matrices
 from webapp.services.factor_service import list_factor_categories_meta
 from webapp.services.universe_service import list_active_universe
@@ -24,12 +24,17 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 # Forward-return horizon used for the home-page factor RankIC computation.
 RANK_IC_HORIZON = 5
 
-# FactorRanking cache: keyed by (universe, latest bar date) so it is
-# invalidated as soon as new market data arrives. Guarded by a lock because
-# concurrent requests may otherwise recompute the (expensive) RankIC in
-# parallel and starve other endpoints.
-_ranking_cache: dict[tuple[tuple[str, ...], str], list[FactorRankingItem]] = {}
+# FactorRanking cache: keyed by (universe, latest bar date, data revision) so
+# it is invalidated when new market data arrives AND when historical bars are
+# revised in place — revisions may leave the universe and the max date
+# unchanged (F17). Guarded by a lock because concurrent requests may otherwise
+# recompute the (expensive) RankIC in parallel and starve other endpoints.
+_ranking_cache: dict[tuple[tuple[str, ...], str, int], list[FactorRankingItem]] = {}
 _ranking_cache_lock = threading.Lock()
+
+# F17: 修订号推进后旧键不会立即删除，上限防止历史键随写入次数无界增长；
+# 超出后按插入序淘汰最旧键。
+_RANKING_CACHE_MAX_KEYS = 8
 
 
 class DashboardStats(BaseModel):
@@ -134,6 +139,7 @@ def get_factor_ranking(db: Session = Depends(get_db)):
     key = (
         tuple(sorted(universe)),
         str(pd.to_datetime(price_data["date"]).max()),
+        get_data_revision(),
     )
     with _ranking_cache_lock:
         cached = _ranking_cache.get(key)
@@ -196,6 +202,8 @@ def get_factor_ranking(db: Session = Depends(get_db)):
 
     with _ranking_cache_lock:
         _ranking_cache[key] = ranking
+        while len(_ranking_cache) > _RANKING_CACHE_MAX_KEYS:
+            _ranking_cache.pop(next(iter(_ranking_cache)))
     return ranking
 
 

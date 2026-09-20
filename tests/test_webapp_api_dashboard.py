@@ -137,3 +137,78 @@ def test_returns_ranking_short_history_reports_actual_days(monkeypatch):
     data = response.json()
     assert data["days"] == 2
     assert data["momentum"][0]["return_pct"] == pytest.approx(0.21)
+
+
+# ── F17: 行情修订后排名缓存失效 + 缓存容量上限 ────────────────────────
+
+
+def _counting_forward_returns(monkeypatch) -> dict:
+    """包装 calculate_forward_returns 统计调用次数（仅缓存未命中时调用）。"""
+    calls = {"n": 0}
+    original = dashboard_module.calculate_forward_returns
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dashboard_module, "calculate_forward_returns", counting)
+    return calls
+
+
+def test_factor_ranking_cache_invalidated_by_data_revision(monkeypatch):
+    """改历史价/补洞不改变证券集合与最大日期，写入推进修订号必须使缓存失效。"""
+    dashboard_module._ranking_cache.clear()
+    calls = _counting_forward_returns(monkeypatch)
+
+    assert client.get("/api/dashboard/factor-ranking").status_code == 200
+    assert calls["n"] == 1
+    # 无数据变化：复用缓存，不重算
+    assert client.get("/api/dashboard/factor-ranking").status_code == 200
+    assert calls["n"] == 1
+
+    # 一次行情写入（与库内同值重写）→ 修订号推进 → 缓存失效重算
+    from webapp.models.database import SessionLocal
+    from webapp.models.market_data import EtfDailyBar
+    from webapp.services.data_service import upsert_daily_bars
+
+    db = SessionLocal()
+    try:
+        bar = db.query(EtfDailyBar).first()
+        df = pd.DataFrame([{
+            "date": pd.Timestamp(bar.trade_date), "sec": bar.sec_code,
+            "open": bar.open, "high": bar.high, "low": bar.low, "close": bar.close,
+            "volume": bar.volume, "amount": bar.amount, "source": bar.source,
+        }])
+        upsert_daily_bars(db, df)
+    finally:
+        db.close()
+
+    assert client.get("/api/dashboard/factor-ranking").status_code == 200
+    assert calls["n"] == 2
+
+
+def test_factor_ranking_cache_capacity_bounded(monkeypatch):
+    """缓存键数量有上限：新键插入后按插入序淘汰最旧键。"""
+    dashboard_module._ranking_cache.clear()
+    max_keys = dashboard_module._RANKING_CACHE_MAX_KEYS
+    for i in range(max_keys):
+        dashboard_module._ranking_cache[(("OLD",), str(i), i)] = []
+
+    etfs = [{"sec_code": "X1", "sec_name": "X1", "category": ""}]
+    monkeypatch.setattr(dashboard_module, "get_etf_list", lambda db: etfs)
+    dates = pd.bdate_range("2024-01-01", periods=30)
+    price_data = pd.DataFrame({
+        "date": [*dates, *dates],
+        "sec": ["X1"] * len(dates) + ["X2"] * len(dates),
+        "close": [100.0] * len(dates) + [100.0] * len(dates),
+    })
+    monkeypatch.setattr(
+        dashboard_module, "get_etf_price", lambda db, universe, start, end: price_data
+    )
+
+    assert client.get("/api/dashboard/factor-ranking").status_code == 200
+
+    cache = dashboard_module._ranking_cache
+    assert len(cache) == max_keys
+    assert (("OLD",), "0", 0) not in cache  # 最旧键被淘汰
+    assert any(key[0] == ("X1",) for key in cache)  # 新键已入缓存

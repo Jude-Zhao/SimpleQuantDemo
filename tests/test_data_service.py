@@ -161,3 +161,23 @@ def test_coverage_rows_monotone_and_reader(test_db):
         "510500.SH",
     }
     assert reader(["510300.SH"], None, None, "daily") == set()  # 无界请求无 start 语义
+
+
+# ── F17：行情写入推进修订号（首页排名缓存失效依据）────────────────────
+
+
+def test_upsert_daily_bars_bumps_data_revision(test_db):
+    """成功写入日线后修订号 +1；空写入不递增。纯查询（get_data_revision）只读。"""
+    from webapp.services.data_service import get_data_revision, upsert_daily_bars
+
+    before = get_data_revision()
+    df = pd.DataFrame(
+        [{"date": pd.Timestamp("2024-01-02"), "sec": "510300.SH", "open": 100,
+          "high": 101, "low": 99, "close": 100.5, "volume": 1, "amount": 1,
+          "source": "test"}]
+    )
+    assert upsert_daily_bars(test_db, df) == 1
+    assert get_data_revision() == before + 1
+
+    assert upsert_daily_bars(test_db, pd.DataFrame()) == 0
+    assert get_data_revision() == before + 1

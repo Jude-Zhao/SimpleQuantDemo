@@ -7,6 +7,7 @@ Provides convenience functions used by other webapp services.
 from __future__ import annotations
 
 import logging
+import threading
 
 import pandas as pd
 from sqlalchemy import func
@@ -20,6 +21,24 @@ from webapp.models.market_data import EtfCacheCoverage, EtfDailyBar
 logger = logging.getLogger(__name__)
 
 _config = get_config()
+
+# 行情修订号（F17）：任何成功写入日线的调用后递增。展示层缓存键携带该值
+# ——历史修订（改旧价/补洞）不改变证券集合与最大日期，仅靠二者做键会命中
+# 过期结果。纯查询只读不递增。
+_data_revision_lock = threading.Lock()
+_data_revision = 0
+
+
+def get_data_revision() -> int:
+    """返回当前行情修订号（只读，供展示层缓存键使用）。"""
+    with _data_revision_lock:
+        return _data_revision
+
+
+def _bump_data_revision() -> None:
+    global _data_revision
+    with _data_revision_lock:
+        _data_revision += 1
 
 
 def _get_primary_source():
@@ -152,6 +171,10 @@ def upsert_daily_bars(db: Session, df: pd.DataFrame, commit: bool = True) -> int
         count += len(chunk)
     if commit:
         db.commit()
+    if count:
+        # F17: 写入成功后推进修订号（commit=False 的同步路径由调用方稍后
+        # 提交；此处先行递增，回滚只会造成一次多余的重算，无害）
+        _bump_data_revision()
     return count
 
 
