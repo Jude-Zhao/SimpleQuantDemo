@@ -23,10 +23,13 @@
 
     function loadScript(route) {
         const { file, fn } = ROUTES[route];
+        // F24: 缓存加载中的 Promise——同一页面未加载完成时重复进入只插入
+        // 一次脚本，避免重复执行带顶层 let/const 的脚本；失败后删除缓存的
+        // Promise 允许重试。
         if (scriptCache[route]) {
-            return Promise.resolve(scriptCache[route]);
+            return scriptCache[route];
         }
-        return new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             const script = document.createElement("script");
             script.src = `/static/js/pages/${file}?v=${pageScriptVersion}`;
             script.onload = () => {
@@ -35,12 +38,18 @@
                     reject(new Error(`页面模块 ${fn} 未定义`));
                     return;
                 }
-                scriptCache[route] = renderFn;
                 resolve(renderFn);
             };
             script.onerror = () => reject(new Error(`加载 ${file} 失败`));
             document.head.appendChild(script);
         });
+        scriptCache[route] = promise;
+        promise.catch(() => {
+            if (scriptCache[route] === promise) {
+                delete scriptCache[route];
+            }
+        });
+        return promise;
     }
 
     function setActiveNav(route) {
@@ -56,16 +65,29 @@
         return ROUTES[hash] ? hash : "dashboard";
     }
 
+    // F24: 渲染请求递增序号——await 返回后确认仍属于最新请求才允许更新
+    // DOM/导航/标题，晚到的旧页面脚本不再覆盖当前路由内容。
+    let renderSeq = 0;
+
     async function render(route) {
         const r = ROUTES[route] || ROUTES.dashboard;
+        const seq = ++renderSeq;
+        // 页面实例令牌：传入页面脚本，供其异步数据响应检查本页是否仍有效
+        // （已销毁页面的响应不得再触碰控件）。
+        const page = { route, alive: () => seq === renderSeq };
         // Release charts bound to the outgoing page before replacing its DOM.
         Charts.clearAll();
         container.innerHTML = `<div class="loading"><div class="spinner"></div>加载中...</div>`;
         try {
             const renderFn = await loadScript(route);
-            renderFn(container);
+            if (!page.alive()) return;
+            renderFn(container, page);
         } catch (e) {
+            if (!page.alive()) return;
             container.innerHTML = `<div class="alert alert-error">加载页面失败: ${Utils.escapeHtml(e.message)}</div>`;
+            setActiveNav(route);
+            document.title = `${r.title} · SimpleQuant 量化看板`;
+            return;
         }
         setActiveNav(route);
         document.title = `${r.title} · SimpleQuant 量化看板`;

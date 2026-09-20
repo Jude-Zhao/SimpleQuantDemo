@@ -1,6 +1,6 @@
 /* Dashboard home page — stat cards + returns ranking + RankIC ranking + recent runs */
 
-function renderDashboard(container) {
+function renderDashboard(container, page) {
     container.innerHTML = `
         <div class="page-header">
             <h1 class="page-title">首页</h1>
@@ -82,27 +82,29 @@ function renderDashboard(container) {
         </div>
     `;
 
-    loadStats();
-    loadReturnsRanking();
-    loadFactorRanking();
-    loadRecentRuns();
+    // F24: 传入页面实例令牌，异步数据响应在写 DOM 前检查本页是否仍有效。
+    loadStats(page);
+    loadReturnsRanking(page);
+    loadFactorRanking(page);
+    loadRecentRuns(page);
 
     document.getElementById("btn-refresh-dashboard").addEventListener("click", () => {
-        loadStats();
-        loadReturnsRanking();
-        loadFactorRanking();
-        loadRecentRuns();
+        loadStats(page);
+        loadReturnsRanking(page);
+        loadFactorRanking(page);
+        loadRecentRuns(page);
         Components.toast("看板数据已刷新", "success", 1500);
     });
 
     document.getElementById("ret-days").addEventListener("change", () => {
-        loadReturnsRanking();
+        loadReturnsRanking(page);
     });
 }
 
-async function loadStats() {
+async function loadStats(page) {
     try {
         const stats = await API.request("/api/dashboard/stats");
+        if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
         Utils.animateNumber(document.getElementById("stat-universe"), stats.universe_count);
         Utils.animateNumber(document.getElementById("stat-factors"), stats.factor_count);
         Utils.animateNumber(document.getElementById("stat-runs"), stats.run_count_today);
@@ -111,6 +113,7 @@ async function loadStats() {
         statusEl.style.color = "var(--success)";
         document.getElementById("stat-detail").textContent = "API 服务运行中";
     } catch (e) {
+        if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
         const statusEl = document.getElementById("stat-status");
         statusEl.textContent = "异常";
         statusEl.style.color = "var(--danger)";
@@ -118,7 +121,7 @@ async function loadStats() {
     }
 }
 
-function loadReturnsRanking() {
+function loadReturnsRanking(page) {
     const days = parseInt(document.getElementById("ret-days").value, 10);
     const momentumEl = document.getElementById("momentum-chart");
     const reversalEl = document.getElementById("reversal-chart");
@@ -129,6 +132,7 @@ function loadReturnsRanking() {
 
     API.request(`/api/dashboard/returns-ranking?days=${days}`)
         .then((data) => {
+            if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
             const hint = document.getElementById("ret-rank-hint");
             hint.textContent = data.as_of
                 ? `截至 ${data.as_of}，标的池 ${data.days} 个交易日区间收益率`
@@ -143,6 +147,7 @@ function loadReturnsRanking() {
             renderReturnBar(reversalEl, data.reversal);
         })
         .catch((e) => {
+            if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
             momentumEl.innerHTML = `<div class="alert alert-error">加载失败: ${Utils.escapeHtml(e.message)}</div>`;
             reversalEl.innerHTML = "";
         });
@@ -187,12 +192,13 @@ function renderReturnBar(el, items) {
     }));
 }
 
-function loadFactorRanking() {
+function loadFactorRanking(page) {
     const el = document.getElementById("factor-ranking-chart");
     if (!el) return;
 
     API.request("/api/dashboard/factor-ranking")
         .then((ranking) => {
+            if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
             if (!ranking.length) {
                 el.innerHTML = `<div class="empty-state"><div class="empty-title">暂无因子数据</div></div>`;
                 return;
@@ -251,6 +257,7 @@ function loadFactorRanking() {
             }).join("");
         })
         .catch((e) => {
+            if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
             el.innerHTML = `<div class="alert alert-error">加载排名失败: ${Utils.escapeHtml(e.message)}</div>`;
         });
 }
@@ -260,11 +267,12 @@ function isWide(label) {
     return label.length > 18;
 }
 
-function loadRecentRuns() {
+function loadRecentRuns(page) {
     const tbody = document.querySelector("#recent-runs-table tbody");
     if (!tbody) return;
     API.request("/api/dashboard/recent-runs?limit=6")
         .then((runs) => {
+            if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
             if (!runs.length) {
                 tbody.innerHTML = `<tr><td colspan="4" class="text-muted">暂无运行记录</td></tr>`;
                 return;
@@ -280,6 +288,7 @@ function loadRecentRuns() {
                 .join("");
         })
         .catch((e) => {
+            if (page && !page.alive()) return; // F24: 页面已销毁，不再触碰控件
             tbody.innerHTML = `<tr><td colspan="4" class="text-muted">加载失败: ${Utils.escapeHtml(e.message)}</td></tr>`;
         });
 }
