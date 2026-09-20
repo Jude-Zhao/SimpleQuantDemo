@@ -11,6 +11,7 @@ Orchestrates the full pipeline for each strategy type:
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
@@ -189,6 +190,36 @@ def _prune_history_runs(db: Session, max_runs: int) -> None:
 # Guards concurrent strategy submissions so only one run executes at a time.
 _strategy_run_lock = threading.Lock()
 
+logger = logging.getLogger(__name__)
+
+
+def _mark_run_failed(run_id: int, error_msg: str) -> None:
+    """尽力把运行记录置为 failed 终态（自建会话）。
+
+    用于线程启动失败、worker 会话创建失败等走不到正常错误处理分支的路径：
+    pending 记录不终结会永久占用策略任务互斥。标记本身依赖数据库可用，
+    再次失败时只能记录日志并放弃。
+    """
+    from webapp.models.database import SessionLocal
+
+    try:
+        db = SessionLocal()
+    except Exception:
+        logger.exception("策略任务 %s 标记 failed 时创建会话失败", run_id)
+        return
+    try:
+        run = db.query(StrategyRun).filter(StrategyRun.id == run_id).first()
+        if run:
+            run.status = "failed"
+            run.error_msg = error_msg
+            run.completed_at = utc_now()
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("策略任务 %s 标记 failed 失败", run_id)
+    finally:
+        db.close()
+
 
 def submit_strategy(
     db: Session,
@@ -250,12 +281,30 @@ def submit_strategy(
         db.refresh(run)
 
     run_id = run.id
-    thread = threading.Thread(
-        target=_execute_run,
-        args=(run_id,),
-        daemon=True,
-    )
-    thread.start()
+    try:
+        thread = threading.Thread(
+            target=_execute_run,
+            args=(run_id,),
+            daemon=True,
+        )
+        thread.start()
+    except Exception as exc:  # noqa: BLE001
+        # pending 记录已提交：启动失败必须立即置为终态，否则互斥检查会
+        # 永久拒绝后续提交，直到重启清理。
+        error_msg = f"策略任务线程启动失败: {exc}"
+        db.rollback()
+        failed = db.query(StrategyRun).filter(StrategyRun.id == run_id).first()
+        if failed:
+            failed.status = "failed"
+            failed.error_msg = error_msg
+            failed.completed_at = utc_now()
+            db.commit()
+        return StrategyRunSummary(
+            run_id=run_id,
+            strategy_type=strategy_type,
+            status="failed",
+            error_msg=error_msg,
+        )
 
     return StrategyRunSummary(
         run_id=run_id,
@@ -273,7 +322,13 @@ def _execute_run(run_id: int) -> None:
     """
     from webapp.models.database import SessionLocal
 
-    db = SessionLocal()
+    try:
+        db = SessionLocal()
+    except Exception as exc:  # noqa: BLE001
+        # 会话创建失败时记录仍停留在 pending，会永久占用策略任务互斥；
+        # 用新会话尽力置为终态。
+        _mark_run_failed(run_id, f"创建数据库会话失败: {exc}")
+        return
     try:
         run = db.query(StrategyRun).filter(StrategyRun.id == run_id).first()
         if run is None:
