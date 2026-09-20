@@ -18,7 +18,9 @@ from core.factors.config import FactorCategory, FactorInstance
 from core.synthesis import (
     build_category_scores_with_details,
     eaa_composite,
+    enabled_category_keys,
     faa_composite,
+    filter_issues_by_categories,
 )
 
 DATES = pd.date_range("2026-01-05", periods=6, freq="D")
@@ -302,3 +304,64 @@ def test_full_data_formula_unchanged() -> None:
     composite_eaa = eaa_composite(scores, {"momentum": 0.5, "volume": 1.25}, beta=0.5)
     # 手算：(1^0.5 * 1^1.25)^0.5 = 1.0
     assert np.allclose(composite_eaa.to_numpy(), 1.0)
+
+
+# ── F19：禁用类别的资格缺失不进决策日志排除项 ─────────────────────────
+
+
+def test_disabled_category_issues_not_in_decision_log() -> None:
+    """F19 验收：选中证券不因禁用类别进入 exclusions。
+
+    _bc_invalid_detail：B 动量 NaN（启用类别 missing）、C 量能 inf（禁用
+    类别 non_finite）。volume 权重 0 → C 合成有效且被选中，其量能问题不得
+    出现在排除项；B 的动量问题完整保留。旧实现会同时记录 C 的 volume
+    non_finite，与"目标权重 > 0"自相矛盾。
+    """
+    detail = _bc_invalid_detail()
+    weights = {"momentum": 1.0, "volume": 0.0}
+    composite = faa_composite(detail.scores, weights)
+    enabled = enabled_category_keys(detail.scores, weights)
+    assert enabled == {"momentum"}
+    issues = filter_issues_by_categories(detail.issues, enabled)
+
+    plan = build_target_weights(
+        composite,
+        DATES,
+        BacktestConfig(rebalance_freq="5d", top_n=2, max_weight=1.0, min_weight=0.0),
+        decision_issues=issues,
+    )
+    entry = plan.decision_log[0]
+    assert entry["status"] == "target_created"
+    row = plan.target_weights.loc[entry["decision_date"]]
+    assert row["A"] > 0 and row["C"] > 0  # C 被选中
+    # 排除项只有 B 的动量 missing，无任何 volume 类别行
+    assert {e["sec"] for e in entry["exclusions"]} == {"B"}
+    assert all(e["category"] == "momentum" for e in entry["exclusions"])
+
+
+def test_filter_issues_by_categories_preserves_enabled_rows() -> None:
+    """启用类别内同名不同参数实例的问题逐条保留；EAA 口径共用同一 helper。"""
+    detail = _detail(
+        _momentum(
+            FactorInstance(name="stub", params={"nan_secs": ["B"]}),
+            FactorInstance(name="stub", params={"nan_secs": ["B", "C"]}),
+        ),
+        _volume(FactorInstance(name="stub", params={"inf_secs": ["C"]})),
+    )
+    issues = filter_issues_by_categories(detail.issues, {"momentum"})
+    assert (issues["category"] == "momentum").all()
+    # B 两实例逐条保留；C 仅第二实例无效
+    b_mom = issues[(issues["category"] == "momentum") & (issues["sec"] == "B")]
+    assert len(b_mom) == 2 * len(DATES)
+    c_mom = issues[(issues["category"] == "momentum") & (issues["sec"] == "C")]
+    assert len(c_mom) == len(DATES)
+
+    # EAA 正指数口径：全部启用 → 与原始明细一致
+    all_enabled = filter_issues_by_categories(
+        detail.issues,
+        enabled_category_keys(detail.scores, {"momentum": 1.0, "volume": 0.5}),
+    )
+    assert len(all_enabled) == len(detail.issues)
+
+    # 空明细原样返回
+    assert filter_issues_by_categories(detail.issues.iloc[:0], {"momentum"}).empty

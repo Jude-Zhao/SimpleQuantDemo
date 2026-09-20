@@ -40,7 +40,12 @@ from core.backtest.targets import build_target_weights
 from core.calendar import generate_rebalance_dates, get_trading_dates
 from core.data import SqliteDataSource
 from core.factors.utils import pivot_price_field
-from core.synthesis import eaa_composite, faa_composite
+from core.synthesis import (
+    eaa_composite,
+    enabled_category_keys,
+    faa_composite,
+    filter_issues_by_categories,
+)
 from core.synthesis.eligibility import build_category_scores_with_details
 from research.config import ResearchConfig, default_research_config
 from research.factors.config import load_research_categories
@@ -148,7 +153,8 @@ def _build_composite(
     """Build the FAA or EAA composite score matrix with eligibility details.
 
     Returns (composite, decision_issues)。合成跨启用类别取有效性 AND；
-    decision_issues 供 build_target_weights 记录逐日资格明细。
+    decision_issues 供 build_target_weights 记录逐日资格明细——只含启用
+    （正权重/正指数）类别，禁用类别的缺失不进决策日志（F19）。
     """
     detail = build_category_scores_with_details(
         price_data,
@@ -157,14 +163,19 @@ def _build_composite(
         resolver=resolve_factor_class,
     )
     if config.strategy_type == "eaa":
-        exponents = config.exponents or {
+        params = config.exponents or {
             cat.key: 1.0 for cat in categories if not cat.is_empty
         }
-        return eaa_composite(detail.scores, exponents, config.beta), detail.issues
-    class_weights = config.class_weights or {
-        cat.key: 1.0 for cat in categories if not cat.is_empty
-    }
-    return faa_composite(detail.scores, class_weights), detail.issues
+        composite = eaa_composite(detail.scores, params, config.beta)
+    else:
+        params = config.class_weights or {
+            cat.key: 1.0 for cat in categories if not cat.is_empty
+        }
+        composite = faa_composite(detail.scores, params)
+    decision_issues = filter_issues_by_categories(
+        detail.issues, enabled_category_keys(detail.scores, params)
+    )
+    return composite, decision_issues
 
 
 def _slice_backtest_window(

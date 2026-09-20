@@ -236,3 +236,32 @@ def eaa_composite(
     # F11: 幂运算后重新应用原资格掩码——跨启用类别 AND 的 NaN 语义不因
     # 参数取值失效（β>0 时 NaN**β 本应为 NaN，此处对意外路径兜底）。
     return (product ** beta_value).where(product.notna())
+
+
+def enabled_category_keys(
+    category_scores: dict[str, pd.DataFrame],
+    params: dict[str, float],
+) -> set[str]:
+    """合成实际参与的类别键（F19）。
+
+    与 faa_composite / eaa_composite 的启用口径同源：仅正权重（FAA）/
+    正指数（EAA）类别参与合成，其余为禁用类别。调用方应以同一集合过滤
+    decision_issues——禁用类别的资格缺失进入决策日志会产生"证券被选中
+    却记录被排除"的自相矛盾。
+    """
+    return {key for key in category_scores if params.get(key, 0.0) > 0}
+
+
+def filter_issues_by_categories(
+    issues: pd.DataFrame | None,
+    enabled_categories: set[str],
+) -> pd.DataFrame | None:
+    """只保留启用类别的资格明细行（F19）。
+
+    禁用类别（权重/指数为 0）不参与合成，其缺失不应出现在决策日志的
+    exclusions 中。全量原始明细仍可从 build_category_scores_with_details
+    的返回值取得。空/None 明细原样返回。
+    """
+    if issues is None or issues.empty:
+        return issues
+    return issues[issues["category"].isin(enabled_categories)]

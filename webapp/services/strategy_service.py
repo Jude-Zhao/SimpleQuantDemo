@@ -29,7 +29,12 @@ from core.optimization import (
     ScoreWeightedOptimizer,
     validate_constraints,
 )
-from core.synthesis import eaa_composite, faa_composite
+from core.synthesis import (
+    eaa_composite,
+    enabled_category_keys,
+    faa_composite,
+    filter_issues_by_categories,
+)
 from core.synthesis.eligibility import build_category_scores_with_details
 from webapp.config import get_config
 from webapp.models.database import utc_now
@@ -445,6 +450,10 @@ def _run_faa(
     categories = list_factor_categories()
     detail = build_category_scores_with_details(full_price_data, universe, categories)
     composite = faa_composite(detail.scores, class_weights)
+    # F19: 与合成共用启用集合，禁用类别的资格缺失不进决策日志排除项
+    decision_issues = filter_issues_by_categories(
+        detail.issues, enabled_category_keys(detail.scores, class_weights)
+    )
     latest_weights, latest_data_date, latest_reason = _latest_recommendation(
         composite, EqualWeightOptimizer(top_n=top_n, max_weight=1.0, min_weight=0.0)
     )
@@ -459,7 +468,7 @@ def _run_faa(
             min_weight=0.0,
             weight_mode="equal",
         ),
-        decision_issues=detail.issues,
+        decision_issues=decision_issues,
     )
 
     return run_result, latest_weights, latest_data_date, latest_reason
@@ -487,6 +496,10 @@ def _run_eaa(
     categories = list_factor_categories()
     detail = build_category_scores_with_details(full_price_data, universe, categories)
     composite = eaa_composite(detail.scores, exponents, beta)
+    # F19: 与合成共用启用集合，禁用类别的资格缺失不进决策日志排除项
+    decision_issues = filter_issues_by_categories(
+        detail.issues, enabled_category_keys(detail.scores, exponents)
+    )
     latest_weights, latest_data_date, latest_reason = _latest_recommendation(
         composite, ScoreWeightedOptimizer(top_n=top_n, max_weight=1.0, min_weight=0.0)
     )
@@ -501,7 +514,7 @@ def _run_eaa(
             min_weight=0.0,
             weight_mode="score",
         ),
-        decision_issues=detail.issues,
+        decision_issues=decision_issues,
     )
 
     return run_result, latest_weights, latest_data_date, latest_reason

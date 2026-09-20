@@ -10,8 +10,13 @@ import pandas as pd
 
 from core.backtest import BacktestConfig
 from core.backtest.targets import build_target_weights
-from research.config import default_research_config
-from research.main import _slice_backtest_window, calculate_backtest_summary, run_research
+from research.config import ResearchConfig, default_research_config
+from research.main import (
+    _build_composite,
+    _slice_backtest_window,
+    calculate_backtest_summary,
+    run_research,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -182,3 +187,58 @@ def test_factor_dates_do_not_change_execution_days():
     assert first not in plan_partial.target_weights.index
     for d in plan_full.rebalance_dates[1:]:
         assert plan_partial.target_weights.loc[d].equals(plan_full.target_weights.loc[d])
+
+
+# ── F19: 研究入口同样只把启用类别的资格明细传给决策日志 ────────────────
+
+
+def test_build_composite_filters_disabled_category_issues(monkeypatch):
+    """FAA/EAA 两分支：detail.issues 过滤后仅剩启用（正权重/正指数）类别。"""
+    import research.main as research_main
+    from core.synthesis import CategoryBuildResult
+
+    dates = pd.bdate_range("2024-01-02", periods=6)
+    secs = ["A1", "S2", "S3"]
+    momentum = pd.DataFrame(1.0, index=dates, columns=secs)
+    momentum["S2"] = np.nan
+    volume = pd.DataFrame(1.0, index=dates, columns=secs)
+    volume["S3"] = np.inf
+    issue_rows = [
+        {"date": d, "sec": "S2", "category": "momentum", "factor": "stub",
+         "instance_index": 0, "params": {}, "reason": "missing"}
+        for d in dates
+    ] + [
+        {"date": d, "sec": "S3", "category": "volume", "factor": "stub",
+         "instance_index": 0, "params": {}, "reason": "non_finite"}
+        for d in dates
+    ]
+    detail = CategoryBuildResult(
+        scores={"momentum": momentum, "volume": volume},
+        issues=pd.DataFrame(
+            issue_rows,
+            columns=["date", "sec", "category", "factor", "instance_index", "params", "reason"],
+        ),
+    )
+    monkeypatch.setattr(
+        research_main, "build_category_scores_with_details", lambda *args, **kwargs: detail
+    )
+    price_data = pd.DataFrame(
+        [
+            {"date": d, "sec": s, "open": 100.0, "high": 100.0, "low": 100.0,
+             "close": 100.0, "volume": 1000.0, "amount": 1e6}
+            for d in dates
+            for s in secs
+        ]
+    )
+
+    config = ResearchConfig(
+        strategy_type="faa", class_weights={"momentum": 1.0, "volume": 0.0}
+    )
+    composite, issues = _build_composite(price_data, secs, (), config)
+    assert (issues["category"] == "momentum").all()
+
+    config = ResearchConfig(
+        strategy_type="eaa", exponents={"momentum": 1.0, "volume": 0.0}, beta=0.5
+    )
+    composite, issues = _build_composite(price_data, secs, (), config)
+    assert (issues["category"] == "momentum").all()

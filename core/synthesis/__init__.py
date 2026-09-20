@@ -13,7 +13,9 @@ from core.synthesis.faa_eaa import (
     build_category_scores,
     category_score_from_matrices,
     eaa_composite,
+    enabled_category_keys,
     faa_composite,
+    filter_issues_by_categories,
     normalize_cross_section,
 )
 from core.synthesis.icir_weight import ICIRWeightedSynthesizer, calculate_decayed_icir_score
@@ -31,6 +33,8 @@ __all__ = [
     "calculate_decayed_icir_score",
     "category_score_from_matrices",
     "eaa_composite",
+    "enabled_category_keys",
     "faa_composite",
+    "filter_issues_by_categories",
     "normalize_cross_section",
 ]
